@@ -1,0 +1,20 @@
+{
+  "name": "雅思复习工具",
+  "short_name": "雅思复习",
+  "description": "基于 Leitner 五箱法，让复盘材料在正确的时间回来找你。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FDF6F2",
+  "theme_color": "#FF8FB1",
+  "icons": [
+    {
+      "src": "/icons/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

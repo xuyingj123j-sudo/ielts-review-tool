@@ -1,0 +1,19 @@
+{
+  "name": "ielts-review-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "基于 Leitner 五箱法的雅思复习触发工具",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test_srs.js && node test_speech.js && node test_ui.js",
+    "test:speech": "node test_speech.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^5.2.1"
+  }
+}

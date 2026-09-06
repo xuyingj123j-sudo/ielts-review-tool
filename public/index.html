@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#FF8FB1">
+  <meta name="description" content="让雅思复盘材料在正确的时间回来找你">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icons/app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <title>雅思复习工具</title>
+</head>
+<body>
+  <div class="app-shell">
+    <main id="app" aria-live="polite"></main>
+  </div>
+
+  <nav class="bottom-nav" aria-label="主要导航">
+    <button class="nav-item active" data-page="home"><span>⌂</span><small>首页</small></button>
+    <button class="nav-item" data-page="review"><span>↻</span><small>复习</small></button>
+    <button class="nav-item nav-add" data-page="entry"><span>＋</span><small>录入</small></button>
+    <button class="nav-item" data-page="library"><span>▤</span><small>卡片库</small></button>
+  </nav>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/card-ui.js" defer></script>
+  <script src="/speech.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>
