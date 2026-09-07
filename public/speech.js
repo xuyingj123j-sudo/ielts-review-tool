@@ -45,15 +45,24 @@
   }
 
   function buttonHtml(text, label, options = {}) {
-    if (!options.force && !hasEnglish(text)) return '';
+    const actualText = options.base64 ? decodeBase64Utf8(text) : text;
+    if (!options.force && !hasEnglish(actualText)) return '';
     const target = options.target
       ? ` data-speech-target="${escapeAttribute(options.target)}"`
-      : ` data-speech-text="${escapeAttribute(text)}"`;
+      : options.base64
+        ? ` data-speech-base64="${escapeAttribute(text)}"`
+        : ` data-speech-text="${escapeAttribute(text)}"`;
     const fallbackTarget = options.fallbackTarget
       ? ` data-speech-fallback-target="${escapeAttribute(options.fallbackTarget)}"`
       : '';
-    const hidden = hasEnglish(text) ? '' : ' hidden';
+    const hidden = hasEnglish(actualText) ? '' : ' hidden';
     return `<button class="speech-button" type="button"${target}${fallbackTarget}${hidden} aria-label="朗读${escapeAttribute(label)}" title="朗读${escapeAttribute(label)}">🔊</button>`;
+  }
+
+  function decodeBase64Utf8(value = '') {
+    if (typeof Buffer !== 'undefined') return Buffer.from(String(value), 'base64').toString('utf8');
+    const bytes = Uint8Array.from(globalThis.atob(String(value)), (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
   }
 
   function buttonText(button, documentRef) {
@@ -62,6 +71,7 @@
       if (primary.trim()) return primary;
       return documentRef.getElementById(button.dataset.speechFallbackTarget)?.value || '';
     }
+    if (button.dataset.speechBase64) return decodeBase64Utf8(button.dataset.speechBase64);
     return button.dataset.speechText || '';
   }
 

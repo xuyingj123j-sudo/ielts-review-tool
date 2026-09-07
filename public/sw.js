@@ -1,4 +1,4 @@
-const CACHE = 'ielts-review-v3';
+const CACHE = 'ielts-review-v6';
 const SHELL = ['/', '/styles.css', '/card-ui.js', '/speech.js', '/app.js', '/manifest.json', '/icons/app-icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -10,7 +10,8 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET' || new URL(event.request.url).pathname.startsWith('/api/')) return;
+  const pathname = new URL(event.request.url).pathname;
+  if (event.request.method !== 'GET' || pathname.startsWith('/api/') || pathname.startsWith('/listening-audio/')) return;
   event.respondWith(fetch(event.request).then((response) => {
     const copy = response.clone();
     caches.open(CACHE).then((cache) => cache.put(event.request, copy));

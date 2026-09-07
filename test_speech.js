@@ -55,6 +55,18 @@ assert.deepEqual(calls, [
 console.log(`✓ 旧卡向后兼容断言通过：front_audio 为 null 时 speak 文本回退为 front = ${JSON.stringify(calls[1].text)}`);
 
 calls.length = 0;
+const spellingBack = 'movie/film';
+const spellingButtonMarkup = speech.buttonHtml(Buffer.from(spellingBack, 'utf8').toString('base64'), '正确拼写', { base64: true });
+assert.equal(spellingButtonMarkup.includes(spellingBack), false);
+const encoded = spellingButtonMarkup.match(/data-speech-base64="([^"]+)"/)[1];
+const spellingButton = createButton('');
+spellingButton.dataset = { speechBase64: encoded };
+speech.bindButtons({ querySelectorAll: () => [spellingButton] }, { synth, Utterance: MockUtterance, documentRef: {} });
+spellingButton.click();
+assert.equal(calls[1].text, spellingBack);
+console.log('✓ 拼写模式朗读断言通过：DOM不含back明文，点击喇叭时 speak 文本 = "movie/film"');
+
+calls.length = 0;
 englishButton.dataset.speechText = 'second request';
 englishButton.click();
 assert.deepEqual(calls, [

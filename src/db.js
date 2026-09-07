@@ -22,6 +22,7 @@ function cardsTableSql(tableName) {
       front TEXT NOT NULL,
       front_audio TEXT,
       back TEXT NOT NULL,
+      review_mode TEXT NOT NULL DEFAULT 'flip',
       note TEXT,
       box INTEGER NOT NULL DEFAULT 1 CHECK (box BETWEEN 1 AND 5),
       next_review_date TEXT NOT NULL,
@@ -56,6 +57,9 @@ class ReviewDatabase {
     if (!cardColumns.some((column) => column.name === 'front_audio')) {
       this.connection.exec('ALTER TABLE cards ADD COLUMN front_audio TEXT');
     }
+    if (!cardColumns.some((column) => column.name === 'review_mode')) {
+      this.connection.exec("ALTER TABLE cards ADD COLUMN review_mode TEXT NOT NULL DEFAULT 'flip'");
+    }
 
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS review_logs (
@@ -79,11 +83,42 @@ class ReviewDatabase {
         completed_at TEXT NOT NULL,
         content TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS listening_tests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_book TEXT NOT NULL,
+        test_number INTEGER NOT NULL CHECK (test_number BETWEEN 1 AND 99),
+        UNIQUE (source_book, test_number)
+      );
+      CREATE TABLE IF NOT EXISTS listening_sections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        test_id INTEGER NOT NULL REFERENCES listening_tests(id) ON DELETE CASCADE,
+        section_number INTEGER NOT NULL CHECK (section_number BETWEEN 1 AND 4),
+        title TEXT NOT NULL,
+        audio_path TEXT NOT NULL,
+        transcript_text TEXT NOT NULL,
+        answer_key_text TEXT NOT NULL,
+        UNIQUE (test_id, section_number)
+      );
+      CREATE TABLE IF NOT EXISTS listening_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        section_id INTEGER NOT NULL REFERENCES listening_sections(id) ON DELETE CASCADE,
+        attempt_date TEXT NOT NULL,
+        score_correct INTEGER NOT NULL CHECK (score_correct >= 0),
+        score_total INTEGER NOT NULL CHECK (score_total > 0),
+        check_gist INTEGER NOT NULL CHECK (check_gist IN (0, 1)),
+        check_key_sentences INTEGER NOT NULL CHECK (check_key_sentences IN (0, 1)),
+        check_paraphrase INTEGER NOT NULL CHECK (check_paraphrase IN (0, 1)),
+        check_redo_improved INTEGER NOT NULL CHECK (check_redo_improved IN (0, 1)),
+        check_retention INTEGER NOT NULL CHECK (check_retention IN (0, 1)),
+        notes TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(next_review_date);
       CREATE INDEX IF NOT EXISTS idx_cards_filters ON cards(skill, type, box);
       CREATE INDEX IF NOT EXISTS idx_review_logs_date ON review_logs(reviewed_at);
       CREATE INDEX IF NOT EXISTS idx_daily_tasks_date_done ON daily_tasks(task_date, done);
       CREATE INDEX IF NOT EXISTS idx_writing_completions_date ON writing_completions(completed_at);
+      CREATE INDEX IF NOT EXISTS idx_listening_sections_stage ON listening_sections(section_number, test_id);
+      CREATE INDEX IF NOT EXISTS idx_listening_attempts_stage_recent ON listening_attempts(section_id, attempt_date DESC, id DESC);
     `);
 
     const writingColumns = this.connection.pragma('table_info(writing_completions)');
@@ -152,17 +187,17 @@ class ReviewDatabase {
 
   createCard(card) {
     const result = this.connection.prepare(`
-      INSERT INTO cards (skill, type, front, front_audio, back, note, box, next_review_date, created_at)
-      VALUES (@skill, @type, @front, @frontAudio, @back, @note, 1, @nextReviewDate, @createdAt)
-    `).run({ ...card, frontAudio: card.frontAudio ?? null });
+      INSERT INTO cards (skill, type, front, front_audio, back, review_mode, note, box, next_review_date, created_at)
+      VALUES (@skill, @type, @front, @frontAudio, @back, @reviewMode, @note, 1, @nextReviewDate, @createdAt)
+    `).run({ ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip' });
     return this.getCard(result.lastInsertRowid);
   }
 
   updateCard(id, card) {
     this.connection.prepare(`
-      UPDATE cards SET skill=@skill, type=@type, front=@front, front_audio=@frontAudio, back=@back, note=@note
+      UPDATE cards SET skill=@skill, type=@type, front=@front, front_audio=@frontAudio, back=@back, review_mode=@reviewMode, note=@note
       WHERE id=@id
-    `).run({ id, ...card, frontAudio: card.frontAudio ?? null });
+    `).run({ id, ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip' });
     return this.getCard(id);
   }
 
@@ -175,6 +210,18 @@ class ReviewDatabase {
       SELECT * FROM cards WHERE next_review_date <= ?
       ORDER BY next_review_date ASC, box ASC, id ASC
     `).all(today);
+  }
+
+  cardsReviewedOn(date) {
+    return this.connection.prepare(`
+      SELECT cards.*
+      FROM cards
+      WHERE cards.id IN (
+        SELECT DISTINCT card_id FROM review_logs
+        WHERE substr(reviewed_at, 1, 10) = ?
+      )
+      ORDER BY cards.last_reviewed_at DESC, cards.id ASC
+    `).all(date);
   }
 
   applyReview({ id, result, boxBefore, boxAfter, nextReviewDate, reviewedAt }) {
@@ -284,6 +331,90 @@ class ReviewDatabase {
       WHERE substr(completed_at, 1, 10) BETWEEN ? AND ?
       ORDER BY completed_at DESC, id DESC
     `).all(startDate, endDate);
+  }
+
+  importListeningTest({ sourceBook, testNumber, sections }) {
+    return this.connection.transaction(() => {
+      this.connection.prepare(`
+        INSERT INTO listening_tests (source_book, test_number) VALUES (?, ?)
+        ON CONFLICT(source_book, test_number) DO NOTHING
+      `).run(sourceBook, testNumber);
+      const test = this.connection.prepare(`
+        SELECT * FROM listening_tests WHERE source_book = ? AND test_number = ?
+      `).get(sourceBook, testNumber);
+      const upsert = this.connection.prepare(`
+        INSERT INTO listening_sections (
+          test_id, section_number, title, audio_path, transcript_text, answer_key_text
+        ) VALUES (@testId, @sectionNumber, @title, @audioPath, @transcriptText, @answerKeyText)
+        ON CONFLICT(test_id, section_number) DO UPDATE SET
+          title=excluded.title,
+          audio_path=excluded.audio_path,
+          transcript_text=excluded.transcript_text,
+          answer_key_text=excluded.answer_key_text
+      `);
+      for (const section of sections) upsert.run({ testId: test.id, ...section });
+      return this.listListeningSections();
+    })();
+  }
+
+  listListeningSections() {
+    return this.connection.prepare(`
+      SELECT listening_sections.id, listening_sections.section_number,
+             listening_sections.title, listening_sections.audio_path,
+             listening_tests.source_book, listening_tests.test_number,
+             latest.id AS latest_attempt_id, latest.attempt_date AS latest_attempt_date,
+             latest.score_correct AS latest_score_correct, latest.score_total AS latest_score_total
+      FROM listening_sections
+      JOIN listening_tests ON listening_tests.id = listening_sections.test_id
+      LEFT JOIN listening_attempts AS latest ON latest.id = (
+        SELECT id FROM listening_attempts
+        WHERE section_id = listening_sections.id
+        ORDER BY attempt_date DESC, id DESC LIMIT 1
+      )
+      ORDER BY listening_sections.section_number, listening_tests.source_book, listening_tests.test_number
+    `).all();
+  }
+
+  getListeningSection(id) {
+    return this.connection.prepare(`
+      SELECT listening_sections.*, listening_tests.source_book, listening_tests.test_number
+      FROM listening_sections
+      JOIN listening_tests ON listening_tests.id = listening_sections.test_id
+      WHERE listening_sections.id = ?
+    `).get(id);
+  }
+
+  recentListeningAttemptsByStage(sectionNumber, limit = 3) {
+    return this.connection.prepare(`
+      SELECT listening_attempts.*
+      FROM listening_attempts
+      JOIN listening_sections ON listening_sections.id = listening_attempts.section_id
+      WHERE listening_sections.section_number = ?
+      ORDER BY listening_attempts.attempt_date DESC, listening_attempts.id DESC
+      LIMIT ?
+    `).all(sectionNumber, limit);
+  }
+
+  listeningAttemptsForSection(sectionId) {
+    return this.connection.prepare(`
+      SELECT * FROM listening_attempts WHERE section_id = ?
+      ORDER BY attempt_date DESC, id DESC
+    `).all(sectionId);
+  }
+
+  createListeningAttempt(attempt) {
+    const result = this.connection.prepare(`
+      INSERT INTO listening_attempts (
+        section_id, attempt_date, score_correct, score_total, check_gist,
+        check_key_sentences, check_paraphrase, check_redo_improved,
+        check_retention, notes
+      ) VALUES (
+        @sectionId, @attemptDate, @scoreCorrect, @scoreTotal, @checkGist,
+        @checkKeySentences, @checkParaphrase, @checkRedoImproved,
+        @checkRetention, @notes
+      )
+    `).run(attempt);
+    return this.connection.prepare('SELECT * FROM listening_attempts WHERE id = ?').get(result.lastInsertRowid);
   }
 
   close() {

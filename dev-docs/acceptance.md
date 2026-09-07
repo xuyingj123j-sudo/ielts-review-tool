@@ -6,6 +6,165 @@
 
 2026-09-06 七次迭代仍仅修改本地代码与本地 SQLite；未连接线上服务器，未执行部署或 PM2 操作。
 
+### 自由练习模式（2026-09-07，本地，不部署）
+
+1. Chrome 在临时数据库副本上实测 `todayDue=0`，复习页 DOM 显示“今天已经清空啦”及“练习全部卡片”/“练习今天已复习”两个入口。
+2. 点击全部后 DOM 显示“自由练习”、`1 / 18 · 不记录进度`；翻卡后点“记得”进入 `2 / 18`，证明一轮可正常推进。
+3. 临时验收卡 id=28 的自由练习 curl 提交返回 `{"correct":true,"correct_answer":"movie/film"}`；提交前后 `GET /api/cards?search=FREE_PRACTICE_SPELLING` 均为 `box=3,next_review_date=2026-09-20,review_count=0`，直查 `review_logs` 均为 0。
+4. 卡片库中 id=27 点击/回车后 DOM 为“单卡练习”、`1 / 1 · 不记录进度`，正面文本与所选卡一致；对 id=28 用真实鼠标点击后进入拼写单卡界面。
+5. id=28 在单卡界面提交 `cinema`，DOM 显示“正确答案：movie/film（仅自测，进度未变）”；curl 前后仍为 `box=3,next_review_date=2026-09-20,review_count=0`，`review_logs=0→0`。
+6. 同一临时卡走正式 `POST /api/review/28/spelling`，curl 返回 `box_before=3,box_after=4,next_review_date=2026-09-13`；随后 curl 为 `box=4,next_review_date=2026-09-13,review_count=1`，`review_logs=0→1`。
+7. `npm test` 全量通过，覆盖 SRS、拼写、自由/单卡练习、朗读、UI、听力挖空/解锁、每日任务和写作。正式 `data/ielts.db` 最终为 19 张，`integrity_check=ok`；其中 id=29 是任务验收前已由本地应用写入的拼写卡（`created_at=2026-09-06 23:34:26`），本轮未删除或改动它。临时副本与验收卡已清理。
+
+`test_practice.js` 自动证据：
+
+```text
+✓ 自由练习范围断言通过：全部2张，今天已复习1张，拼写卡不泄露back明文
+✓ 自由练习零落库断言通过：box=3→3, next=2026-09-07→2026-09-07, logs=0→0
+✓ 单卡练习零落库断言通过：box=3→3, next=2026-09-07→2026-09-07, logs=0→0
+✓ 正式复习回归通过：box=3→4, next=2026-09-07→2026-09-14, logs=0→1
+```
+
+本轮未连接线上服务器、未部署、未推送 GitHub。
+
+### 卡片拼写测试模式（2026-09-07，本地，不部署）
+
+`npm test` 全量通过。新增的 `test_spelling.js` 给普通旧表一次性插入 18 张卡，再由正式迁移入口打开，实际断言：
+
+```text
+✓ 公共判分复用断言通过：听力与卡片拼写均调用 src/domain/answerMatch.js
+✓ review_mode 普通加列迁移断言通过：18张旧卡完整保留且全部默认 flip
+✓ 提交前防泄露断言通过：拼写卡队列响应无 back 字段及 back 明文，保留仅供朗读的编码音源
+✓ 拼写正确自动判分断言通过：" FILM " 命中 movie/film，box 2 → 3
+✓ 拼写错误自动判分断言通过：box 4 → 1，响应 correct_answer = movie/film
+✓ 普通 flip 回归断言通过：旧卡仍走翻卡接口并由第1箱升到第2箱
+```
+
+听力测试继续用真实剑16 Test1 Part1 数据通过 `" Egg "`、`movie/film` 两种写法和错题回显；SRS、每日任务、写作、听力阶段解锁、朗读、UI 合同测试均在同一轮 `npm test` 中通过。
+
+本地 3001 使用临时验收卡（id=28）获得 HTTP 证据：
+
+```text
+POST /api/cards -> review_mode="spelling", back="movie/film", box=1
+GET /api/review/queue -> id=28 无 back 属性，响应明文不含 movie/film
+POST /api/review/28/spelling {"answer":" FILM "}
+  -> {"correct":true,"result":"correct","box_before":1,"box_after":2,"correct_answer":"movie/film"}
+POST /api/review/28/spelling {"answer":"cinema"}
+  -> {"correct":false,"result":"incorrect","box_before":2,"box_after":1,"correct_answer":"movie/film"}
+```
+
+Chrome 本地页面提交前 DOM：仅显示 `SPELLING_DOM_PROMPT_20260907`、背面朗读按钮、拼写输入框和提交按钮；`htmlContainsBackPlaintext=false`、无手动 `data-result` 按钮、无横向溢出。提交错误答案后显示 `正确答案：movie/film（已回到第 1 箱）`，输入表单 `display=none`，下一张按钮可见。录入表单的“拼写测试模式”开关默认关闭、值为 `spelling`。
+
+验收卡最终经 `DELETE /api/cards/28` 删除，HTTP 204；级联复习日志为 0。正式本地库最终证据：
+
+```text
+ROOT_HTTP=200
+FINAL_CARD_COUNT=18
+FINAL_CARD_IDS=1,3,4,5,6,8,9,10,11,13,15,17,18,21,22,23,26,27
+ALL_REVIEW_MODES=["flip"]
+REGRESSION_HTTP={"statsTotal":18,"tasks":["听力","阅读","口语"],"writingRecords":1,"listeningStages":4}
+INTEGRITY_CHECK=ok
+LOCAL_SERVER_PID=48924
+```
+
+本轮未连接线上服务器、未部署、未触碰 PM2、未推送 GitHub。
+
+### 听力原文自动挖空与自动判分（本地，不部署）
+
+`npm test` 读取已导入的剑16 Test1 Part1真实数据并通过以下断言：
+
+```text
+✓ 真实原文挖空断言通过：blank number = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]，换行边界只挖掉 egg
+✓ 多选一答案领域断言通过：Q6 填 movie 或 film 均为 10/10
+✓ 错题与容错断言通过：" Egg " 判对；Q2 判错并返回 correct_answer = tower；总分 9/10
+✓ 单条达标记录断言通过：Section2 仍为 locked，Section1 连续达标 1/3
+✓ 阶段解锁断言通过：Section1 最近3条均达标后，Section2 locked → unlocked
+✓ checklist 不达标断言通过：自动判分 10/10 但只勾4项，qualified=false，Section3 未误解锁
+```
+
+同一次 `npm test` 中 SRS、错词卡片 CRUD/迁移、到期队列、每日任务、写作记录、每周复盘、朗读与 UI 合同断言全部通过。
+
+本地 3001 重启当前代码后只读 HTTP 证据：
+
+```text
+GET /api/listening/sections/1 -> HTTP=200
+transcript_segments blank numbers=1,2,3,4,5,6,7,8,9,10
+```
+
+浏览器使用系统临时目录内的真实数据库备份交互，未写入用户正式库。提交 `Q1=" Egg "`、`Q2="wrong tower"`、`Q6="film"`，其余正确且 5 项全勾后，DOM 证据：
+
+```json
+{
+  "summary":"自动判分：9/10",
+  "inputCount":0,
+  "correctCount":9,
+  "incorrectCount":1,
+  "results":["✓ Q1 Egg","✕ Q2 wrong tower → tower","✓ Q6 film"],
+  "submitDisabled":true,
+  "submitText":"已自动判分 9/10"
+}
+```
+
+页面初始状态同时确认：10 个输入框题号为 1-10，完整原文与答案面板均隐藏，音频路径为 `/listening-audio/Test1_Part1.mp3`，无横向溢出。正式库验收前后均为 18 张卡片、4 条 `listening_sections`、0 条 `listening_attempts`；未新建持久化题目表，未写入正式练习记录。
+
+### 听力真题练习模块试运行（本地，不部署）
+
+`npm run import:listening` 实际输出：
+
+```text
+已导入 剑16 Test1：Part1 Children's Engineering Workshops；Part2 Stevenson's site；Part3 Art Projects；Part4 Stoicism
+版权素材仅写入已忽略的 data/ielts.db 与 data/audio/。
+IDEMPOTENT_COUNTS={"cards":18,"sections":4,"attempts":0,"tasks":10,"writing":1}
+AUDIO_PART1_HASH_MATCH=True
+AUDIO_PART2_HASH_MATCH=True
+AUDIO_PART3_HASH_MATCH=True
+AUDIO_PART4_HASH_MATCH=True
+```
+
+`curl http://localhost:3001/api/listening/sections` 返回 4 条，`section_number/title` 为：
+
+```text
+1 Children's Engineering Workshops
+2 Stevenson's site
+3 Art Projects
+4 Stoicism
+```
+
+音频范围请求证据：
+
+```text
+HTTP/1.1 206 Partial Content
+Accept-Ranges: bytes
+Content-Type: audio/mpeg
+Content-Range: bytes 0-15/13505290
+Content-Length: 16
+```
+
+`npm test` 听力模块关键断言：
+
+```text
+✓ 单条达标记录断言通过：Section2 仍为 locked，Section1 连续达标 1/3
+✓ 阶段解锁断言通过：Section1 最近3条均达标后，Section2 locked → unlocked
+✓ 不达标记录断言通过：8/10 但只勾4项，qualified=false，Section3 未误解锁
+✓ 分数阈值断言通过：6/10 即使5项全勾也不达标
+✓ HTML 解析器断言通过：只提取 Test1 Part1-4，并分离标题、原文与答案
+全部听力真题练习模块测试通过。
+```
+
+同一次 `npm test` 中既有 SRS、到期队列、每日任务、写作记录、每周复盘、朗读与 UI 合同断言全部通过。任务开始时本地库实际为 18 张卡片（不是任务描述中的 21+），导入前后均为 18；未补造、删除或修改既有卡片。
+
+移动端 Chrome 390×844 实测：`hasHorizontalOverflow=false`，底部导航 `position=fixed`、`navBottom=830/viewportHeight=844`。页面显示 Section1 解锁、Section2-4 置灰；练习页音频 `readyState=4`、`error=null`，原文与答案初始 `hidden=true`，5 项 checkbox 均存在；点击显示后正文长度分别为 3566/108，控制台 error/warn 为空。浏览器未提交表单，真实库 `listening_attempts` 保持 0 条，留给用户试练。
+
+Git 忽略证据：
+
+```text
+.gitignore:4:data/audio/  data/audio/Test1_Part1.mp3
+.gitignore:2:data/*.db   data/ielts.db
+git status --short --ignored: !! data/
+```
+
+本地服务当前监听 `0.0.0.0:3001`；本轮未连接服务器、未触碰 PM2、未部署。
+
 ### 七次迭代：挖空正面与完整朗读原句分离
 
 `npm test` 当前关键断言实际输出：

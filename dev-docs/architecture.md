@@ -17,14 +17,21 @@ The single recommended architecture is a monolithic Node.js application: Express
 | 层 | 唯一职责 | 禁止承担 |
 | --- | --- | --- |
 | `src/domain/srs.js` | 箱位迁移、间隔与日期计算 | HTTP、SQL、DOM |
+| `src/domain/answerMatch.js` | 大小写/首尾空格归一化、`/` 多答案比较 | 听力题号解析、HTTP、DOM |
 | `src/db.js` | schema、卡片 CRUD、到期查询、日志聚合 | UI 和路由格式 |
 | `src/services.js` | 输入校验、用例编排、统计结果、每周写作目标常量 | 静态资源和 DOM |
 | `src/app.js` | Express 请求/响应映射、静态文件 | 重复业务规则 |
 | `public/` | SPA 展示与交互 | 自建业务真源或 mock 数据 |
 
+听力真题模块与 Leitner 卡片模块并列：`src/domain/listening.js` 单一拥有答案文本解析、原文即时挖空，以及 `SECTION_UNLOCK_STREAK=3`、`SECTION_UNLOCK_THRESHOLD=0.7`、5 项 checklist 和最近记录判定；答案比较统一委托 `src/domain/answerMatch.js`，拼写卡也调用同一函数。`src/db.js` 只持久化 `listening_tests/listening_sections/listening_attempts`，不建题目表；`src/services.js` 负责阶段链式解锁、请求校验、自动分数写入和用例编排；Express 仅暴露 `/api/listening/*` 与不列目录的 `/listening-audio/*` 静态音频；SPA 消费 `transcript_segments` 渲染输入框并展示逐题结果，不重复解析或判分。版权原文、答案、音频仅进入 `.gitignore` 覆盖的 SQLite 与 `data/audio/`，导入脚本本身不包含素材正文。
+
 朗读能力由 `public/speech.js` 单一负责：检测英文字母、选择 `en-GB`/英文降级语音、取消前一次朗读并调用 Web Speech API；正面朗读源也由该模块的 `frontText(card)` 统一决定：优先 `front_audio`，为空时回退 `front`。`public/app.js` 只渲染可见的 `front` 并把朗读源交给喇叭按钮；`front_audio` 仅允许在录入/编辑表单中以可见文字回显。
 
 `cards.front_audio` 是 `src/db.js` 的可空 `TEXT` 字段，旧库通过普通 `ALTER TABLE cards ADD COLUMN front_audio TEXT` 扩展，不重建卡片表；`src/services.js` 复用 5000 字文本校验并将空值归一为 `null`。
+
+`cards.review_mode` 是 `TEXT NOT NULL DEFAULT 'flip'`，旧库只执行普通 `ADD COLUMN`，不重建卡片表。`flip` 继续走既有翻卡与手动“记得/不记得”接口；`spelling` 的到期队列隐藏 `back` 明文，仅下发供 Web Speech API 朗读的编码音源，提交到 `/api/review/:id/spelling` 后由服务层调用公共答案比较函数并把判定结果交给原有 `transition`。错误响应回显 `correct_answer`；浏览器不拥有第二套判分或箱位规则。
+
+自由练习由 `ReviewService` 拥有读取范围、拼写卡脱敏和只读判分合同：`all` 读全库，`today` 通过 `src/db.js` 按当天 `review_logs` 的去重 `card_id` 取卡，单卡按 id 读取。`POST /api/practice/cards/:id/spelling` 只调用 `answerMatches`并返回判分，不调用 `transition`/`applyReview`。SPA 的正式复习和额外练习共用 `renderCurrentReview`/`renderSpellingReview`，仅由 `reviewKind` 选择正式写入端点或只读端点；浏览器不计算 SRS 日期。
 
 `daily_tasks` 由 `src/db.js` 负责唯一约束、按日仅补齐听力/阅读/口语三项、切换与聚合；历史写作任务行允许保留，但今日任务查询不会返回。写作周任务由 `writing_completions(completed_at, content)` 记录，目标常量 `WEEKLY_WRITING_TARGET` 与 `content` 的必填/5000 字校验由 `src/services.js` 单一维护；旧表通过新增 `TEXT NOT NULL DEFAULT ''` 列保留历史空记录，新接口不会再产生空内容。Express 只映射 `/api/tasks/*`、`POST /api/writing/complete` 与 `/api/stats/weekly`。动态 note 标签是纯展示规则，由 `public/card-ui.js` 单一负责，所有“句子对照”均显示“错因（选填）”。
 
@@ -36,6 +43,10 @@ The single recommended architecture is a monolithic Node.js application: Express
 - 连续打卡从最近一个有日志的日期向前按自然日连续聚合，日期断点后重新计数。
 - 删除卡片时通过外键级联删除对应日志。
 - 最大回归风险是日期边界、SRS 状态迁移和统计误算，由 `test_srs.js` 及 HTTP 验收锁定。
+- 听力模块最大风险是把 Test 当解锁维度、只看分数忽略 checklist、或由 UI 重复计算阶段；`test_listening.js` 覆盖 Section 维度、最近 3 条、70% 阈值、5 项全勾和链式解锁。
+- 听力自动判分最大风险是换行导致多挖词、把 `movie/film` 当成字面答案、或前端拥有第二套判分规则；`test_listening.js` 直接读取已导入的剑16 Test1 Part1真实数据，锁定 Q1-Q10、两种 Q6 答案、错题回显和归一化规则。
+- 拼写模式最大风险是提交前泄露 `back`、绕过自动判分手动提交 result、或与听力比较规则分叉；`test_spelling.js` 锁定队列脱敏、专用接口、SRS 升降箱、18 张旧卡普通加列迁移与共享模块引用。
+- 自由练习最大风险是误用正式复习端点导致调度状态或打卡统计污染；`test_practice.js` 同时锁定 `box`/`next_review_date`/`last_reviewed_at`/`review_count`/`review_logs` 零变化和正式路径仍升箱写日志。
 - 朗读回归风险是纯中文误显示、连续点击排队和语音选择错误，由 `test_speech.js` 的浏览器 API mock 断言锁定。
 - `front_audio` 回归风险是完整原句被当作正面可见文字渲染，或老卡片不再朗读 `front`；由 `test_speech.js` mock 断言与卡片库/复习界面 DOM 可见文本检查共同锁定。
 - 每日任务以 `(task_date, skill)` 唯一，重复访问不会新增重复行；完成状态存整数 0/1，API 输出布尔值。

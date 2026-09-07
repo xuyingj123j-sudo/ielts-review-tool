@@ -2,6 +2,15 @@
 
 const { SKILLS, DAILY_TASK_SKILLS, TYPES } = require('./db');
 const { addDays, toLocalDate, transition } = require('./domain/srs');
+const { answerMatches } = require('./domain/answerMatch');
+const {
+  CHECKLIST_FIELDS,
+  SECTION_UNLOCK_STREAK,
+  buildStageProgress,
+  gradeListeningAnswers,
+  isQualifiedAttempt,
+  parseTranscriptSegments
+} = require('./domain/listening');
 
 const WEEKLY_WRITING_TARGET = 1;
 
@@ -41,12 +50,14 @@ class ReviewService {
   normalizeCard(input) {
     if (!SKILLS.includes(input.skill)) throw new HttpError(400, '技能必须是听力、阅读、口语或写作');
     if (!TYPES.includes(input.type)) throw new HttpError(400, '卡片类型无效');
+    if (!['flip', 'spelling'].includes(input.review_mode ?? 'flip')) throw new HttpError(400, '复习模式无效');
     return {
       skill: input.skill,
       type: input.type,
       front: validateText(input.front, '正面'),
       frontAudio: validateText(input.front_audio, '正面朗读用完整原句', false),
       back: validateText(input.back, '背面'),
+      reviewMode: input.review_mode === undefined ? 'flip' : input.review_mode,
       note: validateText(input.note, '备注', false)
     };
   }
@@ -71,7 +82,35 @@ class ReviewService {
   }
 
   queue() {
-    return this.db.dueCards(toLocalDate(this.clock()));
+    return this.db.dueCards(toLocalDate(this.clock())).map((card) => this.safeReviewCard(card));
+  }
+
+  safeReviewCard(card) {
+    if (card.review_mode !== 'spelling') return card;
+    const { back, ...safeCard } = card;
+    return { ...safeCard, spelling_audio: Buffer.from(back, 'utf8').toString('base64') };
+  }
+
+  practiceCards(scope = 'all') {
+    if (!['all', 'today'].includes(scope)) throw new HttpError(400, '自由练习范围无效');
+    const cards = scope === 'today'
+      ? this.db.cardsReviewedOn(toLocalDate(this.clock()))
+      : this.db.listCards();
+    return cards.map((card) => this.safeReviewCard(card));
+  }
+
+  practiceCard(id) {
+    const card = this.db.getCard(id);
+    if (!card) throw new HttpError(404, '卡片不存在');
+    return this.safeReviewCard(card);
+  }
+
+  gradePracticeSpelling(id, input) {
+    const card = this.db.getCard(id);
+    if (!card) throw new HttpError(404, '卡片不存在');
+    if (card.review_mode !== 'spelling') throw new HttpError(400, '该卡片不是拼写测试模式');
+    const answer = validateText(input?.answer, '拼写答案');
+    return { correct: answerMatches(answer, card.back), correct_answer: card.back };
   }
 
   todayTasks() {
@@ -104,12 +143,35 @@ class ReviewService {
     if (!['correct', 'incorrect'].includes(result)) throw new HttpError(400, 'result 必须是 correct 或 incorrect');
     const card = this.db.getCard(id);
     if (!card) throw new HttpError(404, '卡片不存在');
+    if (card.review_mode === 'spelling') throw new HttpError(400, '拼写测试卡片必须提交拼写答案');
     const now = this.clock();
     const state = transition(card.box, result, now);
     return this.db.applyReview({
       id, result, boxBefore: state.boxBefore, boxAfter: state.boxAfter,
       nextReviewDate: state.nextReviewDate, reviewedAt: localDateTime(now)
     });
+  }
+
+  reviewSpelling(id, input) {
+    const card = this.db.getCard(id);
+    if (!card) throw new HttpError(404, '卡片不存在');
+    if (card.review_mode !== 'spelling') throw new HttpError(400, '该卡片不是拼写测试模式');
+    const answer = validateText(input?.answer, '拼写答案');
+    const result = answerMatches(answer, card.back) ? 'correct' : 'incorrect';
+    const now = this.clock();
+    const state = transition(card.box, result, now);
+    const updated = this.db.applyReview({
+      id, result, boxBefore: state.boxBefore, boxAfter: state.boxAfter,
+      nextReviewDate: state.nextReviewDate, reviewedAt: localDateTime(now)
+    });
+    return {
+      correct: result === 'correct',
+      result,
+      correct_answer: card.back,
+      box_before: state.boxBefore,
+      box_after: updated.box,
+      next_review_date: updated.next_review_date
+    };
   }
 
   stats() {
@@ -197,6 +259,79 @@ class ReviewService {
         target: WEEKLY_WRITING_TARGET,
         records: writingRecords
       }
+    };
+  }
+
+  listeningProgress() {
+    const attemptsByStage = {};
+    for (let sectionNumber = 1; sectionNumber <= 4; sectionNumber += 1) {
+      attemptsByStage[sectionNumber] = this.db.recentListeningAttemptsByStage(sectionNumber, SECTION_UNLOCK_STREAK);
+    }
+    return buildStageProgress(attemptsByStage);
+  }
+
+  listeningOverview() {
+    const sections = this.db.listListeningSections();
+    return {
+      stages: this.listeningProgress().map((stage) => ({
+        ...stage,
+        sections: sections.filter((section) => section.section_number === stage.sectionNumber)
+      }))
+    };
+  }
+
+  listListeningSections() {
+    return this.db.listListeningSections();
+  }
+
+  listeningSection(id) {
+    const section = this.db.getListeningSection(id);
+    if (!section) throw new HttpError(404, '听力 Section 不存在');
+    const stage = this.listeningProgress()[section.section_number - 1];
+    if (!stage.unlocked) throw new HttpError(403, `Section ${section.section_number} 阶段尚未解锁`);
+    return {
+      section: { ...section, transcript_segments: parseTranscriptSegments(section.transcript_text, section.answer_key_text) },
+      stage,
+      attempts: this.db.listeningAttemptsForSection(id)
+    };
+  }
+
+  recordListeningAttempt(id, input) {
+    const section = this.db.getListeningSection(id);
+    if (!section) throw new HttpError(404, '听力 Section 不存在');
+    const stage = this.listeningProgress()[section.section_number - 1];
+    if (!stage.unlocked) throw new HttpError(403, `Section ${section.section_number} 阶段尚未解锁`);
+
+    if (!input?.answers || typeof input.answers !== 'object' || Array.isArray(input.answers)) {
+      throw new HttpError(400, 'answers 必须是按题号填写的答案对象');
+    }
+    if (Object.values(input.answers).some((answer) => typeof answer !== 'string')) {
+      throw new HttpError(400, '每题答案必须是文本');
+    }
+    const score = gradeListeningAnswers(section.answer_key_text, input.answers);
+    const checks = {};
+    for (const field of CHECKLIST_FIELDS) {
+      if (typeof input?.[field] !== 'boolean') throw new HttpError(400, '5项达标标准必须明确勾选或取消');
+      checks[field] = input[field];
+    }
+    const attempt = this.db.createListeningAttempt({
+      sectionId: id,
+      attemptDate: toLocalDate(this.clock()),
+      scoreCorrect: score.score_correct,
+      scoreTotal: score.score_total,
+      checkGist: Number(checks.check_gist),
+      checkKeySentences: Number(checks.check_key_sentences),
+      checkParaphrase: Number(checks.check_paraphrase),
+      checkRedoImproved: Number(checks.check_redo_improved),
+      checkRetention: Number(checks.check_retention),
+      notes: validateText(input?.notes, '备注', false)
+    });
+    return {
+      attempt: { ...attempt, qualified: isQualifiedAttempt(attempt) },
+      grading: score.grading,
+      score_correct: score.score_correct,
+      score_total: score.score_total,
+      stages: this.listeningProgress()
     };
   }
 }

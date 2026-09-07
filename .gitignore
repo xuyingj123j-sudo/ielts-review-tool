@@ -1,5 +1,8 @@
 node_modules/
 data/*.db
 data/*.db-*
+data/audio/
+data/listening-content/
+data/**/*剑16*
+data/**/*Test1_Part*
 npm-debug.log*
-

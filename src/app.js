@@ -10,7 +10,7 @@ function parseId(value, label = '卡片') {
   return id;
 }
 
-function createApp(service) {
+function createApp(service, options = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '100kb' }));
@@ -24,13 +24,32 @@ function createApp(service) {
   });
   app.get('/api/review/queue', (req, res) => res.json(service.queue()));
   app.post('/api/review/:id', (req, res) => res.json(service.review(parseId(req.params.id), req.body?.result)));
+  app.post('/api/review/:id/spelling', (req, res) => res.json(service.reviewSpelling(parseId(req.params.id), req.body || {})));
+  app.get('/api/practice/cards', (req, res) => res.json(service.practiceCards(req.query.scope)));
+  app.get('/api/practice/cards/:id', (req, res) => res.json(service.practiceCard(parseId(req.params.id))));
+  app.post('/api/practice/cards/:id/spelling', (req, res) => {
+    res.json(service.gradePracticeSpelling(parseId(req.params.id), req.body || {}));
+  });
   app.get('/api/tasks/today', (req, res) => res.json(service.todayTasks()));
   app.post('/api/tasks/:id/toggle', (req, res) => res.json(service.toggleTask(parseId(req.params.id, '任务'))));
   app.post('/api/writing/complete', (req, res) => res.status(201).json(service.recordWritingCompletion(req.body || {})));
   app.get('/api/stats', (req, res) => res.json(service.stats()));
   app.get('/api/stats/weekly', (req, res) => res.json(service.weeklyStats()));
+  app.get('/api/listening/overview', (req, res) => res.json(service.listeningOverview()));
+  app.get('/api/listening/sections', (req, res) => res.json(service.listListeningSections()));
+  app.get('/api/listening/sections/:id', (req, res) => res.json(service.listeningSection(parseId(req.params.id, 'Section'))));
+  app.post('/api/listening/sections/:id/attempts', (req, res) => {
+    res.status(201).json(service.recordListeningAttempt(parseId(req.params.id, 'Section'), req.body || {}));
+  });
 
   const publicDir = path.join(__dirname, '..', 'public');
+  const audioDir = options.audioDir || path.join(__dirname, '..', 'data', 'audio');
+  app.use('/listening-audio', express.static(audioDir, {
+    index: false,
+    dotfiles: 'deny',
+    fallthrough: false,
+    maxAge: '1h'
+  }));
   app.use(express.static(publicDir, { maxAge: '1h' }));
   app.use((req, res, next) => {
     if (req.path.startsWith('/api/')) return next(new HttpError(404, '接口不存在'));
