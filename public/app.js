@@ -20,11 +20,56 @@ function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 }
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: options.body ? { 'content-type': 'application/json' } : undefined,
-    ...options
+const accessTokenKey = 'ielts_access_token';
+let accessTokenPrompt;
+
+function requestAccessToken() {
+  if (accessTokenPrompt) return accessTokenPrompt;
+  accessTokenPrompt = new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.id = 'access-token-dialog';
+    dialog.setAttribute('aria-labelledby', 'access-token-title');
+    dialog.innerHTML = `<form class="card access-token-card">
+      <h2 id="access-token-title">请输入访问口令</h2>
+      <label for="access-token-input">访问口令</label>
+      <input id="access-token-input" type="password" autocomplete="current-password" required>
+      <button class="primary-button" type="submit">确认</button>
+      <p role="status">口令为空或已失效，请输入后继续。</p>
+    </form>`;
+    dialog.addEventListener('cancel', event => event.preventDefault());
+    dialog.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const token = dialog.querySelector('input').value;
+      if (!token) return;
+      localStorage.setItem(accessTokenKey, token);
+      dialog.close();
+      dialog.remove();
+      accessTokenPrompt = null;
+      resolve();
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector('input').focus();
   });
+  return accessTokenPrompt;
+}
+
+async function api(path, options = {}) {
+  let response;
+  for (;;) {
+    if (accessTokenPrompt) await accessTokenPrompt;
+    const token = localStorage.getItem(accessTokenKey) || '';
+    const headers = new Headers(options.headers);
+    if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
+    headers.set('X-Access-Token', token);
+    response = await fetch(path, { ...options, headers });
+    if (response.status !== 401) break;
+    // A late response for an old token must not erase a newly entered token.
+    if ((localStorage.getItem(accessTokenKey) || '') === token) {
+      localStorage.removeItem(accessTokenKey);
+      await requestAccessToken();
+    }
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `请求失败（${response.status}）`);

@@ -13,6 +13,13 @@ function parseId(value, label = '卡片') {
 function createApp(service, options = {}) {
   const app = express();
   app.disable('x-powered-by');
+  const accessToken = process.env.IELTS_ACCESS_TOKEN;
+  app.use('/api', (req, res, next) => {
+    if (accessToken && req.get('X-Access-Token') !== accessToken) {
+      return res.status(401).json({ error: '未授权' });
+    }
+    next();
+  });
   app.use(express.json({ limit: '100kb' }));
 
   app.get('/api/cards', (req, res) => res.json(service.listCards(req.query)));

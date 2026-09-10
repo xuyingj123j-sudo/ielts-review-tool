@@ -51,6 +51,12 @@
 .numbers-page button:disabled { opacity: .4; cursor: not-allowed; }
 
 * { box-sizing: border-box; }
+#access-token-dialog { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; padding: 24px; background: var(--cream); color: var(--ink); }
+#access-token-dialog[open] { display: grid; place-items: center; }
+.access-token-card { width: 100%; max-width: 400px; padding: 28px; display: grid; gap: 16px; }
+.access-token-card h2, .access-token-card p { margin: 0; }
+.access-token-card input { width: 100%; min-width: 0; padding: 14px; border: 1px solid #EDE7EA; border-radius: 14px; background: var(--cream); }
+.access-token-card p { color: var(--muted); font-size: 14px; }
 html, body { margin: 0; min-height: 100%; background: var(--cream); color: var(--ink); }
 body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; overflow-x: hidden; }
 button, input, select, textarea { font: inherit; }

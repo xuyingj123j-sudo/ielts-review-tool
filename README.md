@@ -12,6 +12,10 @@ npm start
 
 默认访问 `http://localhost:3001`，数据库保存到 `data/ielts.db`。可通过 `PORT` 与 `DB_PATH` 环境变量覆盖。
 
+可选环境变量 `IELTS_ACCESS_TOKEN`：未设置或为空时无需口令；设置非空值后，全部 `/api/` 请求需携带与之完全匹配的 `X-Access-Token`，否则返回 `401 {"error":"未授权"}`。静态页面仍可直接打开，首次请求失败会弹出口令框，输入后保存在浏览器 `localStorage` 的 `ielts_access_token` 中并自动重试。修改环境变量后需重新启动该应用才能生效。
+
+`npm test` 包含既有七套回归及新增口令验收；请在未设置 `IELTS_ACCESS_TOKEN` 的环境运行。单独验收口令可运行 `node test_access_token.js`，脚本自行设置测试口令，使用临时数据库、真实 curl 和独立 Chrome/CDP，并在结束后清理。浏览器验收需要 Node 22+ 和 Chrome/Edge，可用 `CHROME_PATH` 指定浏览器路径。
+
 首次试运行听力真题模块前执行：
 
 ```powershell

@@ -38,6 +38,10 @@ The single recommended architecture is a monolithic Node.js application: Express
 
 ## 合同与风险
 
+可选访问口令由 `src/app.js` 在 JSON 解析和全部 API 路由之前统一校验：`IELTS_ACCESS_TOKEN` 未设置或为空时不鉴权，非空时 `/api` 中间件要求 `X-Access-Token` 完全匹配，失败返回401。静态资源仍公开。`public/app.js` 的唯一 `api()` 入口读取 `ielts_access_token`，401后清除失效值并共用一个模态输入框，输入后保持原方法和请求体重试；旧请求迟到的401不清除新口令。无用户账户或登录系统。
+
+新增验收入口 `node test_access_token.js` 使用临时数据库、真实 curl 和 `scripts/test_access_browser.js` 的独立 Chrome/CDP，覆盖读写拦截、静态放行、错误口令、刷新记忆和POST重试。`npm test` 顺序执行原样保留的七套旧测试（含数字CDP）及新验收；测试服务与浏览器结束后关闭，临时文件清理。
+
 数字听力与卡片/听力真题并列。`ReviewService.pendingNumberQuestions` 保存 UUID 单题状态，请求时清理满10分钟的题目；生成不落库，只返回 `questionId/spokenText`。答案允许空字符串（考试超时），原始输入不 trim；数据库成功写入 `number_drill_attempts` 后才删除待答题。`mixed` 先选九种具体 subtype，再走该类型的类别与模板，持久化具体 subtype 供错题重练。
 
 `public/numbers.js` 实现专项首页、单题、考试、错题、统计五个 SPA 视图，复用 `api`、配色变量和 `IeltsSpeech`；后者通过显式 `allowNumeric` 支持纯数字音源。考试前端默认10题、五类别随机、每题20秒、最多点击播放2次；超时以空答案提交，离页取消计时和朗读，异步回包按页面代次丢弃。考试 session UUID 按 SPEC 不持久化，服务端聚合已提交记录；本轮没有服务端防作弊或中断续考合同。

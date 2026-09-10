@@ -1,4 +1,4 @@
-const CACHE = 'ielts-review-v7';
+const CACHE = 'ielts-review-v8';
 const SHELL = ['/', '/styles.css', '/card-ui.js', '/speech.js', '/numbers.js', '/app.js', '/manifest.json', '/icons/app-icon.svg'];
 
 self.addEventListener('install', (event) => {
