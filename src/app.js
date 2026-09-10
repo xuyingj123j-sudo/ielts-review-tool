@@ -38,6 +38,13 @@ function createApp(service, options = {}) {
     res.json(service.gradePracticeSpelling(parseId(req.params.id), req.body || {}));
   });
   app.get('/api/tasks/today', (req, res) => res.json(service.todayTasks()));
+  app.get('/api/tasks/templates', (req, res) => res.json(service.taskTemplates()));
+  app.post('/api/tasks/templates', (req, res) => res.status(201).json(service.createTaskTemplate(req.body)));
+  app.put('/api/tasks/templates/:id', (req, res) => res.json(service.renameTaskTemplate(parseId(req.params.id, '任务模板'), req.body)));
+  app.delete('/api/tasks/templates/:id', (req, res) => {
+    service.deleteTaskTemplate(parseId(req.params.id, '任务模板'));
+    res.status(204).end();
+  });
   app.post('/api/tasks/:id/toggle', (req, res) => res.json(service.toggleTask(parseId(req.params.id, '任务'))));
   app.post('/api/writing/complete', (req, res) => res.status(201).json(service.recordWritingCompletion(req.body || {})));
   app.get('/api/stats', (req, res) => res.json(service.stats()));

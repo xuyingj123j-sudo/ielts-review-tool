@@ -34,7 +34,7 @@ The single recommended architecture is a monolithic Node.js application: Express
 
 自由练习由 `ReviewService` 拥有读取范围、拼写卡脱敏和只读判分合同：`all` 读全库，`today` 通过 `src/db.js` 按当天 `review_logs` 的去重 `card_id` 取卡，单卡按 id 读取。`POST /api/practice/cards/:id/spelling` 只调用 `answerMatches`并返回判分，不调用 `transition`/`applyReview`。SPA 的正式复习和额外练习共用 `renderCurrentReview`/`renderSpellingReview`，仅由 `reviewKind` 选择正式写入端点或只读端点；浏览器不计算 SRS 日期。
 
-`daily_tasks` 由 `src/db.js` 负责唯一约束、按日仅补齐听力/阅读/口语三项、切换与聚合；历史写作任务行允许保留，但今日任务查询不会返回。写作周任务由 `writing_completions(completed_at, content)` 记录，目标常量 `WEEKLY_WRITING_TARGET` 与 `content` 的必填/5000 字校验由 `src/services.js` 单一维护；旧表通过新增 `TEXT NOT NULL DEFAULT ''` 列保留历史空记录，新接口不会再产生空内容。Express 只映射 `/api/tasks/*`、`POST /api/writing/complete` 与 `/api/stats/weekly`。动态 note 标签是纯展示规则，由 `public/card-ui.js` 单一负责，所有“句子对照”均显示“错因（选填）”。
+`task_templates` 由 `src/db.js` 负责持久化、排序及软删除；首次迁移写入听力/阅读/口语，后续启动不补种。旧 `daily_tasks` 在事务中保留 ID、日期和完成状态，增加模板外键；为兼容旧数据和导入，保留可空的 `skill` 与旧唯一约束，旧格式写入通过触发器关联原默认模板。新任务只按 `(task_date, task_template_id)` 唯一生成，遍历 active 模板；查询 JOIN 模板当前名字。删除模板只物理删除当天对应任务，过去记录保留。写作周任务由 `writing_completions(completed_at, content)` 记录，目标常量 `WEEKLY_WRITING_TARGET` 与 `content` 的必填/5000 字校验由 `src/services.js` 单一维护；旧表通过新增 `TEXT NOT NULL DEFAULT ''` 列保留历史空记录，新接口不会再产生空内容。Express 只映射 `/api/tasks/*`、`POST /api/writing/complete` 与 `/api/stats/weekly`。动态 note 标签是纯展示规则，由 `public/card-ui.js` 单一负责，所有“句子对照”均显示“错因（选填）”。
 
 ## 合同与风险
 
@@ -60,9 +60,11 @@ The single recommended architecture is a monolithic Node.js application: Express
 - 自由练习最大风险是误用正式复习端点导致调度状态或打卡统计污染；`test_practice.js` 同时锁定 `box`/`next_review_date`/`last_reviewed_at`/`review_count`/`review_logs` 零变化和正式路径仍升箱写日志。
 - 朗读回归风险是纯中文误显示、连续点击排队和语音选择错误，由 `test_speech.js` 的浏览器 API mock 断言锁定。
 - `front_audio` 回归风险是完整原句被当作正面可见文字渲染，或老卡片不再朗读 `front`；由 `test_speech.js` mock 断言与卡片库/复习界面 DOM 可见文本检查共同锁定。
-- 每日任务以 `(task_date, skill)` 唯一，重复访问不会新增重复行；完成状态存整数 0/1，API 输出布尔值。
+- 每日任务以 `(task_date, task_template_id)` 唯一，重复访问不会新增重复行；完成状态存整数 0/1，API 输出布尔值。
 - 每周复盘固定取今天及前 6 天，任务完成天数来自 `daily_tasks.done=1`，正确率通过 `review_logs JOIN cards` 按技能聚合，掌握率复用卡片箱位统计。
-- 每周复盘只返回数据：三项每日任务完成天数、四技能正确率与掌握率、写作完成次数、目标及最近 7 天每条写作的 `completed_at`/`content`，不生成判断性文案。
+- 每周复盘只返回数据：实际出现过的模板对应任务完成天数、四技能正确率与掌握率、写作完成次数、目标及最近 7 天每条写作的 `completed_at`/`content`，不生成判断性文案。保留按名称索引的 `dailyTasks` API；同名模板按完成日期去重合并，目标仍为7天，历史条目不会被新模板覆盖。前端动态展示任务统计，不再依赖技能枚举。
+
+2026-09-10 三项反馈：`practiceNotice()` 在自由/单卡练习的翻卡、拼写、空状态及完成页统一渲染 sticky 警示条，正式复习不渲染。首页新增模板编辑页。听力真题仅隐藏前端入口，旧导航目标回首页，后端、数据表和音频保持原样。新增 `test_feedback.js`（curl、迁移与真实库副本验证）及 `scripts/test_feedback_browser.js`（复用现有 Chrome/CDP 模式）接入 `npm test`，测试资源随进程清理。
 
 ## Forbidden Paths
 

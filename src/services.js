@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { SKILLS, DAILY_TASK_SKILLS, TYPES } = require('./db');
+const { SKILLS, TYPES } = require('./db');
 const { addDays, toLocalDate, transition } = require('./domain/srs');
 const { answerMatches } = require('./domain/answerMatch');
 const {
@@ -129,6 +129,22 @@ class ReviewService {
     }));
   }
 
+  taskTemplates() { return this.db.taskTemplates(); }
+
+  createTaskTemplate(input) {
+    return this.db.createTaskTemplate(validateText(input?.name, '任务名'), localDateTime(this.clock()));
+  }
+
+  renameTaskTemplate(id, input) {
+    const template = this.db.renameTaskTemplate(id, validateText(input?.name, '任务名'));
+    if (!template) throw new HttpError(404, '任务模板不存在');
+    return template;
+  }
+
+  deleteTaskTemplate(id) {
+    if (!this.db.deleteTaskTemplate(id, toLocalDate(this.clock()))) throw new HttpError(404, '任务模板不存在');
+  }
+
   toggleTask(id) {
     const task = this.db.toggleDailyTask(id, localDateTime(this.clock()));
     if (!task) throw new HttpError(404, '每日任务不存在');
@@ -238,11 +254,10 @@ class ReviewService {
     const taskRows = this.db.weeklyTaskStats(start, end);
     const reviewRows = this.db.reviewStatsBySkill(start, end);
     const cardsBySkill = new Map(cardRows.map((row) => [row.skill, row]));
-    const tasksBySkill = new Map(taskRows.map((row) => [row.skill, row]));
     const reviewsBySkill = new Map(reviewRows.map((row) => [row.skill, row]));
     const writingRecords = this.db.writingCompletions(start, end);
     const skills = {};
-    const dailyTasks = {};
+    const dailyTasks = Object.create(null);
 
     for (const skill of SKILLS) {
       const cards = cardsBySkill.get(skill) || { total: 0, mastered: 0 };
@@ -255,8 +270,8 @@ class ReviewService {
         masteredRate: cards.total ? Math.round(cards.mastered * 100 / cards.total) : 0
       };
     }
-    for (const skill of DAILY_TASK_SKILLS) {
-      dailyTasks[skill] = { completedDays: tasksBySkill.get(skill)?.completed || 0, targetDays: 7 };
+    for (const task of taskRows) {
+      dailyTasks[task.name] = { completedDays: task.completed, targetDays: 7 };
     }
 
     return {

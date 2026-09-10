@@ -91,10 +91,11 @@ function setActiveNav(page) {
 }
 
 async function navigate(page) {
+  if (['listening', 'listening-practice'].includes(page)) page = 'home';
   window.IeltsNumbers?.dispose();
   state.page = page;
   state.editingId = page === 'entry' ? state.editingId : null;
-  setActiveNav(['progress', 'weekly', 'listening', 'listening-practice', 'numbers'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
+  setActiveNav(['progress', 'weekly', 'task-templates', 'listening', 'listening-practice', 'numbers'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
   loading();
   window.scrollTo({ top: 0, behavior: 'smooth' });
   try {
@@ -105,6 +106,7 @@ async function navigate(page) {
     if (page === 'library') await renderLibrary();
     if (page === 'progress') await renderProgress();
     if (page === 'weekly') await renderWeekly();
+    if (page === 'task-templates') await renderTaskTemplates();
     if (page === 'listening') await renderListeningOverview();
     if (page === 'listening-practice') await renderListeningPractice(state.listeningSectionId);
     if (page === 'numbers') window.IeltsNumbers.mount({ root, api, escapeHtml, speech, showToast });
@@ -131,11 +133,6 @@ async function renderHome() {
       </div>
     </header>
     <article class="card listening-module-card">
-      <div class="listening-module-icon">▶</div>
-      <div><span class="badge listening">并列练习模块</span><h2>听力真题练习</h2><p>原文自动挖空并判分，连续达标后解锁下一阶段。</p></div>
-      <button class="round-arrow listening-arrow" data-go="listening" aria-label="进入听力真题练习">→</button>
-    </article>
-    <article class="card listening-module-card">
       <div class="listening-module-icon">123</div>
       <div><h2>数字听力</h2><p>从数字、日期到真实对话，听清每一个细节。</p></div>
       <button class="round-arrow" data-go="numbers" aria-label="进入数字听力">→</button>
@@ -146,12 +143,12 @@ async function renderHome() {
         <div class="stat-icon">${meta.icon}</div><span class="stat-label">${skill}卡片</span>
         <strong class="stat-value">${stats.skills[skill].total}</strong><span class="stat-tail">↗</span>
       </article>`).join('')}</div>
-    <div class="section-heading"><h2>今日任务</h2><button class="text-link" data-go="weekly">本周复盘</button></div>
+    <div class="section-heading"><h2>今日任务</h2><button class="text-link" data-go="task-templates">编辑</button><button class="text-link" data-go="weekly">本周复盘</button></div>
     <div class="card task-list">${tasks.map((task) => {
-      const meta = skillMeta[task.skill];
+      const meta = Object.hasOwn(skillMeta, task.name) ? skillMeta[task.name] : skillMeta['写作'];
       return `<button class="task-item ${task.done ? 'done' : ''}" data-task-id="${task.id}" aria-pressed="${task.done}">
         <span class="task-check" style="--skill-color:${meta.color}">${task.done ? '✓' : ''}</span>
-        <span><strong>${task.skill}</strong><small>${task.done ? '今天已完成' : '点击标记今日练习'}</small></span>
+        <span><strong>${escapeHtml(task.name)}</strong><small>${task.done ? '今天已完成' : '点击标记今日练习'}</small></span>
       </button>`;
     }).join('')}</div>
     <div class="section-heading"><h2>本周写作</h2></div>
@@ -352,17 +349,21 @@ function reviewTitle() {
   return state.reviewKind === 'formal' ? '今日复习' : (state.reviewKind === 'single' ? '单卡练习' : '自由练习');
 }
 
+function practiceNotice() {
+  return state.reviewKind === 'formal' ? '' : `<aside class="practice-notice" role="note">⚠️ ${reviewTitle()}模式，本轮不影响复习进度</aside>`;
+}
+
 function renderCurrentReview() {
   const total = state.queue.length;
   if (!total) {
     const isFormal = state.reviewKind === 'formal';
-    root.innerHTML = `<section class="page review-wrap">${pageHeader(reviewTitle(), isFormal ? '到期卡片会自动出现在这里' : '额外练习不影响正式复习进度')}<div class="card empty-state"><div class="emoji">🌷</div><h2>${isFormal ? '今天已经清空啦' : '这个范围还没有卡片'}</h2><p>${isFormal ? '想再巩固一轮，可以自由练习全部或今天已复习的卡片。' : '可以改练全部卡片。'}</p><div class="practice-actions"><button class="primary-button" data-start-practice="all">练习全部卡片</button><button class="secondary-button" data-start-practice="today">练习今天已复习</button><button class="secondary-button" data-go="entry">录入卡片</button></div></div></section>`;
+    root.innerHTML = `<section class="page review-wrap">${practiceNotice()}${pageHeader(reviewTitle(), isFormal ? '到期卡片会自动出现在这里' : '额外练习不影响正式复习进度')}<div class="card empty-state"><div class="emoji">🌷</div><h2>${isFormal ? '今天已经清空啦' : '这个范围还没有卡片'}</h2><p>${isFormal ? '想再巩固一轮，可以自由练习全部或今天已复习的卡片。' : '可以改练全部卡片。'}</p><div class="practice-actions"><button class="primary-button" data-start-practice="all">练习全部卡片</button><button class="secondary-button" data-start-practice="today">练习今天已复习</button><button class="secondary-button" data-go="entry">录入卡片</button></div></div></section>`;
     bindGoButtons(); bindPracticeButtons(); return;
   }
   if (state.reviewIndex >= total) {
     const rate = Math.round(state.correct * 100 / total);
     const formal = state.reviewKind === 'formal';
-    root.innerHTML = `<section class="page review-wrap">${pageHeader('本轮完成', formal ? '每一次回想，都在加固记忆' : '本轮只做自测，不改变箱位和日期')}<div class="card empty-state"><div class="emoji">✨</div><h2>练习了 ${total} 张</h2><p>本轮正确率 ${rate}% · 记得 ${state.correct} 张</p><div class="practice-actions">${formal ? '<button class="primary-button" data-start-practice="all">自由练习全部</button><button class="secondary-button" data-start-practice="today">再练今天已复习</button>' : '<button class="primary-button" id="repeat-practice">再练一轮</button>'}<button class="secondary-button" data-go="home">返回首页</button></div></div></section>`;
+    root.innerHTML = `<section class="page review-wrap">${practiceNotice()}${pageHeader('本轮完成', formal ? '每一次回想，都在加固记忆' : '本轮只做自测，不改变箱位和日期')}<div class="card empty-state"><div class="emoji">✨</div><h2>练习了 ${total} 张</h2><p>本轮正确率 ${rate}% · 记得 ${state.correct} 张</p><div class="practice-actions">${formal ? '<button class="primary-button" data-start-practice="all">自由练习全部</button><button class="secondary-button" data-start-practice="today">再练今天已复习</button>' : '<button class="primary-button" id="repeat-practice">再练一轮</button>'}<button class="secondary-button" data-go="home">返回首页</button></div></div></section>`;
     bindGoButtons();
     bindPracticeButtons();
     document.querySelector('#repeat-practice')?.addEventListener('click', () => { state.reviewIndex = 0; state.correct = 0; renderCurrentReview(); });
@@ -374,7 +375,7 @@ function renderCurrentReview() {
     renderSpellingReview(card, meta, total);
     return;
   }
-  root.innerHTML = `<section class="page review-wrap">
+  root.innerHTML = `<section class="page review-wrap">${practiceNotice()}
     ${pageHeader(reviewTitle(), `${state.reviewIndex + 1} / ${total}${state.reviewKind === 'formal' ? '' : ' · 不记录进度'}`)}
     <div class="review-progress"><span style="width:${state.reviewIndex * 100 / total}%"></span></div>
     <div class="flip-scene" id="flip-scene" tabindex="0" role="button" aria-label="点击中间翻转卡片，点击两侧切换上一张/下一张">
@@ -421,7 +422,7 @@ function renderCurrentReview() {
 }
 
 function renderSpellingReview(card, meta, total) {
-  root.innerHTML = `<section class="page review-wrap">
+  root.innerHTML = `<section class="page review-wrap">${practiceNotice()}
     ${pageHeader(reviewTitle(), `${state.reviewIndex + 1} / ${total}${state.reviewKind === 'formal' ? '' : ' · 不记录进度'}`)}
     <div class="review-progress"><span style="width:${state.reviewIndex * 100 / total}%"></span></div>
     <article class="card spelling-card">
@@ -504,13 +505,13 @@ async function renderWeekly() {
         </div>
       </div>
     </article>
+    <div class="section-heading"><h2>每日任务完成率</h2></div>
+    <div class="card task-stats">${Object.entries(weekly.dailyTasks).map(([name, task]) => `<div class="task-stat"><strong>${escapeHtml(name)}</strong><span>${task.completedDays}/${task.targetDays} 天</span></div>`).join('') || '<p>还没有任务记录</p>'}</div>
     <div class="weekly-grid">${Object.entries(skillMeta).map(([skill, meta]) => {
       const item = weekly.skills[skill];
-      const task = weekly.dailyTasks[skill];
       return `<article class="card weekly-card" style="--skill-color:${meta.color}">
         <div class="weekly-card-head"><span class="stat-icon ${meta.className}">${meta.icon}</span><h2>${skill}</h2></div>
         <div class="weekly-metrics">
-          ${task ? `<div><strong>${task.completedDays}/${task.targetDays}</strong><span>任务完成天数</span></div>` : ''}
           <div><strong>${item.accuracy === null ? '—' : `${item.accuracy}%`}</strong><span>复习正确率</span></div>
           <div><strong>${item.masteredRate}%</strong><span>卡片掌握率</span></div>
         </div>
@@ -518,6 +519,49 @@ async function renderWeekly() {
     }).join('')}</div>
   </section>`;
   bindGoButtons();
+}
+
+async function renderTaskTemplates() {
+  const templates = await api('/api/tasks/templates');
+  root.innerHTML = `<section class="page">
+    ${pageHeader('编辑今日任务', '改名同步历史展示；删除保留过去的记录', '<button class="icon-button" data-go="home" aria-label="返回首页">←</button>')}
+    <article class="card task-template-editor">
+      ${templates.map(template => `<form class="template-row" data-template-id="${template.id}">
+        <input name="name" value="${escapeHtml(template.name)}" aria-label="任务名" required maxlength="5000">
+        <button class="text-link" type="submit">保存</button>
+        <button class="text-link" type="button" data-delete-template="${template.id}">删除</button>
+      </form>`).join('') || '<p>暂无任务，可在下方添加。</p>'}
+      <form id="add-task-template" class="template-row">
+        <input name="name" aria-label="新任务名" placeholder="输入任务名" required maxlength="5000">
+        <button class="primary-button" type="submit">添加</button>
+      </form>
+    </article>
+  </section>`;
+  bindGoButtons();
+  const save = async (form, route, method) => {
+    const name = form.elements.name.value.trim();
+    if (!name) { showToast('任务名不能为空'); return; }
+    const buttons = form.querySelectorAll('button');
+    buttons.forEach(button => { button.disabled = true; });
+    try {
+      await api(route, { method, body: JSON.stringify({ name }) });
+      if (state.page === 'task-templates') await renderTaskTemplates();
+    } catch (error) { showToast(error.message); }
+    finally { buttons.forEach(button => { button.disabled = false; }); }
+  };
+  document.querySelector('#add-task-template').addEventListener('submit', event => {
+    event.preventDefault(); save(event.currentTarget, '/api/tasks/templates', 'POST');
+  });
+  document.querySelectorAll('[data-template-id]').forEach(form => form.addEventListener('submit', event => {
+    event.preventDefault(); save(form, `/api/tasks/templates/${form.dataset.templateId}`, 'PUT');
+  }));
+  document.querySelectorAll('[data-delete-template]').forEach(button => button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/tasks/templates/${button.dataset.deleteTemplate}`, { method: 'DELETE' });
+      if (state.page === 'task-templates') await renderTaskTemplates();
+    } catch (error) { showToast(error.message); button.disabled = false; }
+  }));
 }
 
 async function renderListeningOverview() {
@@ -577,7 +621,7 @@ async function renderListeningPractice(sectionId) {
   const detail = await api(`/api/listening/sections/${sectionId}`);
   const { section, stage, attempts } = detail;
   root.innerHTML = `<section class="page listening-page listening-practice">
-    ${pageHeader(`${escapeHtml(section.source_book)} Test ${section.test_number} · Part ${section.section_number}`, escapeHtml(section.title), '<button class="icon-button" data-go="listening" aria-label="返回听力练习首页">←</button>')}
+    ${pageHeader(`${escapeHtml(section.source_book)} Test ${section.test_number} · Part ${section.section_number}`, escapeHtml(section.title), '<button class="icon-button" data-go="home" aria-label="返回首页">←</button>')}
     <article class="card audio-card">
       <span class="badge listening">Section ${section.section_number}</span>
       <h2>${escapeHtml(section.title)}</h2>

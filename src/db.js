@@ -5,7 +5,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 
 const SKILLS = Object.freeze(['听力', '阅读', '口语', '写作']);
-const DAILY_TASK_SKILLS = Object.freeze(['听力', '阅读', '口语']);
+const DAILY_TASK_SKILLS = Object.freeze(['听力', '阅读', '口语']); // 仅用于首次迁移的默认值
 const TYPES = Object.freeze(['同义替换', '句子对照', '语法修正', '听力误听', '生词']);
 
 function sqlEnum(values) {
@@ -140,6 +140,76 @@ class ReviewDatabase {
     if (!writingColumns.some((column) => column.name === 'content')) {
       this.connection.exec("ALTER TABLE writing_completions ADD COLUMN content TEXT NOT NULL DEFAULT ''");
     }
+    this.migrateTaskTemplates();
+  }
+
+  migrateTaskTemplates() {
+    if (this.connection.pragma('table_info(daily_tasks)').some(column => column.name === 'task_template_id')) return;
+    this.connection.transaction(() => {
+      this.connection.exec(`
+        CREATE TABLE task_templates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+          sort_order INTEGER NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+          created_at TEXT NOT NULL
+        );
+      `);
+      const insert = this.connection.prepare('INSERT INTO task_templates (name, sort_order, created_at) VALUES (?, ?, datetime(\'now\'))');
+      DAILY_TASK_SKILLS.forEach((name, index) => insert.run(name, index + 1));
+      // Keep legacy skill rows (including retired writing tasks) and their IDs intact.
+      // New rows use the template FK; nullable skill only supports old data/imports.
+      this.connection.exec(`
+        CREATE TABLE daily_tasks_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_date TEXT NOT NULL,
+          skill TEXT CHECK (skill IN (${sqlEnum(SKILLS)})),
+          done INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+          completed_at TEXT,
+          task_template_id INTEGER REFERENCES task_templates(id),
+          UNIQUE (task_date, skill),
+          UNIQUE (task_date, task_template_id)
+        );
+        INSERT INTO daily_tasks_new (id, task_date, skill, done, completed_at, task_template_id)
+        SELECT d.id, d.task_date, d.skill, d.done, d.completed_at, t.id
+        FROM daily_tasks d LEFT JOIN task_templates t ON t.name = d.skill;
+        DROP TABLE daily_tasks;
+        ALTER TABLE daily_tasks_new RENAME TO daily_tasks;
+        CREATE INDEX idx_daily_tasks_date_done ON daily_tasks(task_date, done);
+        CREATE TRIGGER daily_tasks_legacy_template AFTER INSERT ON daily_tasks
+        WHEN NEW.task_template_id IS NULL AND NEW.skill IS NOT NULL
+        BEGIN
+          UPDATE daily_tasks SET task_template_id = (
+            SELECT id FROM task_templates WHERE id IN (1, 2, 3)
+            AND id = CASE NEW.skill WHEN '听力' THEN 1 WHEN '阅读' THEN 2 WHEN '口语' THEN 3 END
+          ) WHERE id = NEW.id;
+        END;
+      `);
+      if (this.connection.pragma('foreign_key_check').length) throw new Error('任务模板迁移外键校验失败');
+    })();
+  }
+
+  taskTemplates() {
+    return this.connection.prepare('SELECT * FROM task_templates WHERE active = 1 ORDER BY sort_order, id').all();
+  }
+
+  createTaskTemplate(name, createdAt) {
+    const result = this.connection.prepare(`INSERT INTO task_templates (name, sort_order, created_at)
+      VALUES (?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM task_templates), ?)`).run(name, createdAt);
+    return this.connection.prepare('SELECT * FROM task_templates WHERE id = ?').get(result.lastInsertRowid);
+  }
+
+  renameTaskTemplate(id, name) {
+    if (!this.connection.prepare('UPDATE task_templates SET name = ? WHERE id = ? AND active = 1').run(name, id).changes) return null;
+    return this.connection.prepare('SELECT * FROM task_templates WHERE id = ?').get(id);
+  }
+
+  deleteTaskTemplate(id, today) {
+    return this.connection.transaction(() => {
+      if (!this.connection.prepare('UPDATE task_templates SET active = 0 WHERE id = ? AND active = 1').run(id).changes) return false;
+      this.connection.prepare('DELETE FROM daily_tasks WHERE task_template_id = ? AND task_date = ?').run(id, today);
+      return true;
+    })();
   }
 
   migrateCardsTypeConstraint() {
@@ -285,16 +355,14 @@ class ReviewDatabase {
   ensureDailyTasks(taskDate) {
     return this.connection.transaction(() => {
       const insert = this.connection.prepare(`
-        INSERT OR IGNORE INTO daily_tasks (task_date, skill, done, completed_at)
+        INSERT OR IGNORE INTO daily_tasks (task_date, task_template_id, done, completed_at)
         VALUES (?, ?, 0, NULL)
       `);
-      for (const skill of DAILY_TASK_SKILLS) insert.run(taskDate, skill);
+      for (const template of this.taskTemplates()) insert.run(taskDate, template.id);
       return this.connection.prepare(`
-        SELECT * FROM daily_tasks
-        WHERE task_date = ? AND skill IN ('听力', '阅读', '口语')
-        ORDER BY CASE skill
-          WHEN '听力' THEN 1 WHEN '阅读' THEN 2 WHEN '口语' THEN 3
-        END
+        SELECT d.id, d.task_date, d.done, d.completed_at, d.task_template_id, t.name, t.name AS skill
+        FROM daily_tasks d JOIN task_templates t ON t.id = d.task_template_id
+        WHERE d.task_date = ? AND t.active = 1 ORDER BY t.sort_order, t.id
       `).all(taskDate);
     })();
   }
@@ -307,16 +375,16 @@ class ReviewDatabase {
       this.connection.prepare(`
         UPDATE daily_tasks SET done = ?, completed_at = ? WHERE id = ?
       `).run(done, done ? completedAt : null, id);
-      return this.connection.prepare('SELECT * FROM daily_tasks WHERE id = ?').get(id);
+      return this.connection.prepare(`SELECT d.id, d.task_date, d.done, d.completed_at, d.task_template_id, t.name, t.name AS skill
+        FROM daily_tasks d LEFT JOIN task_templates t ON t.id = d.task_template_id WHERE d.id = ?`).get(id);
     })();
   }
 
   weeklyTaskStats(startDate, endDate) {
     return this.connection.prepare(`
-      SELECT skill, COUNT(DISTINCT task_date) AS completed
-      FROM daily_tasks
-      WHERE task_date BETWEEN ? AND ? AND done = 1
-      GROUP BY skill
+      SELECT t.name, COUNT(DISTINCT CASE WHEN d.done = 1 AND d.task_date BETWEEN ? AND ? THEN d.task_date END) AS completed
+      FROM task_templates t JOIN daily_tasks d ON d.task_template_id = t.id
+      GROUP BY t.name ORDER BY MIN(t.sort_order), MIN(t.id)
     `).all(startDate, endDate);
   }
 
