@@ -288,7 +288,7 @@ WEEKLY_TOP_LEVEL_KEYS=period,dailyTasks,skills,writing
 
 数据库现状说明：本轮修改前 `GET /api/cards` 已为 21 张，与任务描述的 22 张不一致；数据库 id 为 `[1,3,4,5,6,7,8,9,10,11,12,13,15,16,17,18,19,20,21,22,23]`。本轮不补造、不删除、不修改真实卡片，以修改后仍为 21 张作为数据未减少证据。
 
-最终本地状态：`curl.exe -sS http://localhost:3001/api/cards` 解析后 `HTTP_CARD_COUNT=21`；`/` 与 `/speech.js` 均返回 HTTP 200；PID 29748 继续监听 `0.0.0.0:3001`，静态前端修改无需重启 Node 进程。浏览器控制台 error/warning 日志为空。本轮未连接 `47.107.180.139`，未执行部署、PM2 或线上数据库操作。
+最终本地状态：`curl.exe -sS http://localhost:3001/api/cards` 解析后 `HTTP_CARD_COUNT=21`；`/` 与 `/speech.js` 均返回 HTTP 200；PID 29748 继续监听 `0.0.0.0:3001`，静态前端修改无需重启 Node 进程。浏览器控制台 error/warning 日志为空。本轮未连接 `<你的服务器IP>`，未执行部署、PM2 或线上数据库操作。
 
 | 标准 | 状态 | 证据摘要 |
 | --- | --- | --- |
@@ -373,8 +373,8 @@ Chrome CDP `Page.getAppManifest` 实际结果包含：
 exec cwd: /opt/ielts-review-tool
 node.js version: 20.20.2
 curl http://127.0.0.1:3001/ -> HTTP/1.1 200 OK
-curl http://47.107.180.139:3000/ -> HTTP/1.1 200 OK
-curl http://47.107.180.139:3001/ -> timeout after 8 seconds
+curl http://<你的服务器IP>:3000/ -> HTTP/1.1 200 OK
+curl http://<你的服务器IP>:3001/ -> timeout after 8 seconds
 ```
 
 服务器 INPUT 防火墙策略为 ACCEPT，3001 已监听；实例无 RAM role、浏览器未登录阿里云控制台，因此无法代为修改安全组。需在阿里云安全组入方向放行 TCP 3001 后复测公网 URL。
