@@ -4,7 +4,7 @@
 
 雅思复习工具是面向单个学习者的复习触发器。它统一管理听力、阅读、口语、写作复习卡片，以 Leitner 五箱机制让到期内容自动回到用户面前，并从复习日志聚合进度。
 
-它不是通用笔记软件，不替代 Obsidian，不包含登录鉴权、社交、多用户、考试倒计时或额外提醒系统。
+它不是通用笔记软件，不替代 Obsidian，不包含登录鉴权、社交、多用户、雅思考试日期提醒或额外提醒系统。SPEC 后续扩展了并列的听力真题和数字听力模块，数字专项考试包含每题限时。
 
 ## Idea Shaping
 
@@ -12,7 +12,7 @@ The single recommended mainline is a review trigger rather than another note-tak
 
 ## 4. Non-Goals
 
-不做通用笔记、Obsidian 替代、多用户、登录鉴权、考试倒计时或额外提醒系统。
+不做通用笔记、Obsidian 替代、多用户、登录鉴权、雅思考试日期提醒或额外提醒系统。
 
 ## 5. First Closed Loop
 
@@ -27,6 +27,8 @@ The single recommended mainline is a review trigger rather than another note-tak
 技术栈、部署目标与产品范围均已由用户在 SPEC 和当前任务中确认。
 
 ## 8. Stop Condition
+
+2026-09-09 数字听力专项停止条件：SPEC 最后一节十项验收、六套现有回归、移动端截图和真实数据前后对比通过；保留非3001端口的本地开发服务器供用户试听，清理临时产物，不部署、不操作PM2、不推GitHub。
 
 阶段一在 SPEC 的验收标准 1-4 与 7 有可复现证据、PWA 可验证部分完成、手机实机未验证项被明确标注，且源码与服务器部署均存在时结束。
 

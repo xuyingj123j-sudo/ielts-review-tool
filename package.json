@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test_srs.js && node test_spelling.js && node test_practice.js && node test_speech.js && node test_ui.js && node test_listening.js",
+    "test": "node test_number_drill.js",
     "import:listening": "node scripts/import_listening_test1.js",
     "test:speech": "node test_speech.js"
   },

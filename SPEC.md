@@ -466,3 +466,184 @@ SECTION_UNLOCK_STREAK = 3
 7. 现有全部功能（错词卡片、每日任务、写作记录、听力模块、拼写模式）回归测试通过，18张卡片数据不变
 
 不部署，不推GitHub，本地验证即可。
+
+## 数字听力专项模块（2026-09-09，仿照Numblr App设计）
+
+用户参考了iOS App "Numblr"（专门练英语数字听力：数字/日期/时间/金额/电话号码，还有把数字嵌进真实对话场景里练的"对话测验"），要求在本工具里照着做一套等价功能，且用户明确要求**对话测验里数字相关的测验类型全部都要**，不是挑几个做。这是跟现有卡片/听力真题模块**并列的新模块**，不改动、不影响任何现有功能。
+
+不做任何PRO/付费墙——Numblr里标"PRO"的功能，在这里全部默认解锁。
+
+### 术语约定
+- **category（基础类别）**：`number`(一般数字) / `date`(日期) / `time`(时间) / `money`(金额) / `phone`(手机号码)，共5个，是所有出题的底层数据类型。
+- **mode（出题模式）**：`standalone`(独立数字测验，纯听数字/日期/时间/金额/电话号码本身，不套句子) / `dialogue`(对话测验，把数字嵌进一句完整的英文语境句子里听) / `exam`(考试模式，限时+限重播，从所有category混合出题)。
+- **subtype（对话测验的场景子类型）**：仅 `mode='dialogue'` 时有值，对应Numblr对话测验里的10个入口：`mixed`(混合) / `general`(一般数字) / `money`(金额) / `phone`(手机号码) / `birthday`(生日) / `date_of_birth`(出生日期) / `deadline`(截止日期) / `anniversary`(纪念日) / `movie_release`(电影上映) / `date`(日期)。每个subtype对应一个底层category（`general`→number，`money`→money，`phone`→phone，其余6个日期相关subtype→date），`mixed`则每题随机挑一个subtype。
+
+### 数据模型
+新增 `number_drill_attempts` 表（只在提交答案时写入，出题阶段不落库）：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | int PK | |
+| mode | text | standalone/dialogue/exam |
+| category | text | number/date/time/money/phone |
+| subtype | text, 可空 | 仅dialogue模式有值 |
+| prompt_text | text, 可空 | 对话模式的完整语境句子（数字部分是自然语言表达，不是"___"占位），standalone模式为NULL |
+| spoken_text | text | 实际喂给speechSynthesis朗读的文本（可能等于prompt_text，也可能是纯数字/日期短语） |
+| correct_answer | text | 标准化后的正确答案 |
+| user_answer | text | 用户提交的原始输入 |
+| is_correct | integer | 0/1 |
+| exam_session_id | text, 可空 | 仅exam模式内的题目共享同一个session id，用于算总分 |
+| attempted_at | text | |
+
+不新建"待作答题目"表——出题和判分之间的临时状态用**进程内内存Map**（key是`crypto.randomUUID()`生成的questionId，value是`{correctAnswer, category, promptText, spokenText, createdAt}`），10分钟未提交自动过期清理（每次请求顺手清一遍过期条目即可，不用定时器）。重启服务会丢失未提交的题目属于预期行为（练习中的单题不算正式数据，不需要持久化）。
+
+### 出题与判分核心逻辑：`src/domain/numberDrill.js`
+
+导出两个函数：
+- `generateQuestion({ category, subtype, mode, now })` → 返回 `{ category, subtype, mode, spokenText, promptText, correctAnswer }`。`now`用于让测试能注入固定时间保证可复现（比如date类别如果需要"最近几年"这种相对范围，测试时不应该依赖真实系统时间）。
+- `gradeAnswer({ category, correctAnswer, userAnswer })` → 返回 `boolean`。
+
+**各category规则（务必按下面的例子实现，验收标准会精确断言这些例子）：**
+
+1. **number（一般数字）**
+   - 随机生成一个2到7位的整数（位数随机），转成字符串。
+   - `spokenText` = 数字本身的字符串（如`"4829"`），直接交给浏览器TTS朗读（TTS会自动读成"four thousand eight hundred twenty-nine"这种自然表达，这正是要练的听力点）。
+   - `correctAnswer` = 该数字字符串（无千分位逗号），如`"4829"`。
+   - 判分：把用户输入去掉所有非数字字符（空格、逗号）后与correctAnswer比较。
+
+2. **date（日期）**
+   - 随机生成 day(1-31，要用真实的月份天数校验，比如2月不能生成30号)、month(1-12)、year(1960-2035)。
+   - 需要实现 `ordinal(day)`：1→"first" 2→"second" 3→"third" 4→"fourth"...11→"eleventh" 12→"twelfth" 13→"thirteenth"...21→"twenty-first" 22→"twenty-second"...31→"thirty-first"（注意11/12/13这种不能套用"个位数决定后缀"的通用规则）。
+   - 需要实现 `yearToWords(year)`：如`2019`→`"twenty nineteen"`，`1990`→`"nineteen ninety"`，`2000`→`"two thousand"`，`2005`→`"two thousand and five"`（能覆盖1960-2035这个范围内所有年份即可，不用做成通用到任意年份的算法）。
+   - `spokenText` 例：day=21,month=3(March),year=2019 → `"the twenty-first of March, twenty nineteen"`。
+   - `promptText`（standalone模式）= null。
+   - `correctAnswer` = `"2019-03-21"`（`YYYY-MM-DD`零填充）。
+   - 判分：解析用户输入——如果第一段是4位数字，按`YYYY-MM-DD`（分隔符支持`/`、`-`、`.`、空格）解析；否则按`DD/MM/YYYY`解析（2位年份按`00-35→20xx，36-99→19xx`换算）。解析出的`(year,month,day)`跟correctAnswer比较。
+
+3. **time（时间）**
+   - 随机生成 hour(0-23)，minute从`[0,5,10,...,55]`（5的倍数）里随机选。
+   - 拼读规则：minute=0→`"{h12} o'clock"`；minute=15→`"quarter past {h12}"`；minute=30→`"half past {h12}"`；minute=45→`"quarter to {h12+1的12小时制}"`；minute<30且非15→`"{minute的英文数词} past {h12}"`；minute>30且非45→`"{(60-minute)的英文数词} to {h12+1}"`。最后拼上时段短语：hour<12→`"in the morning"`，12≤hour<18→`"in the afternoon"`，否则→`"in the evening"`。
+   - 例：hour=15,minute=45 → `"quarter to four in the afternoon"`。
+   - `correctAnswer` = 24小时制`"HH:MM"`零填充，如`"15:45"`。
+   - 判分：如果用户输入带am/pm（不区分大小写、允许有无空格），按12小时制转24小时制再比较；不带am/pm则按用户输入直接当24小时制比较（`"15:45"`）。
+
+4. **money（金额）**
+   - 随机选货币符号（`£`或`$`，写成一个可扩展的数组常量，方便以后加`€`）。
+   - 随机生成整数部分(1-500)，小数部分50%概率是0（整数金额），50%概率是随机两位数。
+   - 需要一个`numberToWords(n)`辅助函数（支持0-999即可，够用来拼整数部分和两位小数部分）。
+   - `spokenText`：小数部分非0时 → `"{整数部分words} pounds and {小数部分words} pence"`（`$`对应`dollars`/`cents`）；小数部分为0时 → `"{整数部分words} pounds"`，不出现"and X pence"这半句。
+   - 例：`£29.99` → `"twenty-nine pounds and ninety-nine pence"`。
+   - `correctAnswer` = `"£29.99"`（符号+两位小数，整数金额也要补`.00`）。
+   - 判分：只校验数值本身——从用户输入里剥离货币符号/单位词后转成数字，跟correctAnswer的数值部分比较（保留2位小数比较），**不强制要求用户输入货币符号**，这是刻意简化（后续如果用户觉得需要连符号一起判，再加严）。
+
+5. **phone（手机号码）**
+   - 生成英国手机号格式：`07` + 9位随机数字，共11位，如`"07911234567"`。
+   - `spokenText`：把11位数字逐位转成英文数词并用`", "`连接，如`"zero, seven, nine, one, one, two, three, four, five, six, seven"`（保证每一位都被单独朗读，不要把整串数字交给TTS当一个大整数读）。
+   - `correctAnswer` = 纯数字字符串`"07911234567"`。
+   - 判分：用户输入去掉所有非数字字符（空格）后跟correctAnswer比较。
+   - 注：真实电话号码朗读里常见"double five"这种重复数字简化表达，这版先不做（标记为后续可加的优化点，不在本轮验收范围内）。
+
+### 对话测验：句子模板
+
+新增 `DIALOGUE_TEMPLATES`（放在同一个`numberDrill.js`里），每个subtype配置对应category + 至少2条模板句子，`{V}`会被替换成该category生成的自然语言表达（即上面各category规则里的"spokenText"那段短语）：
+
+| subtype | category | 模板句子示例（至少写2条，可以自己再加） |
+|---|---|---|
+| general | number | "There are {V} students enrolled in the course this year." / "The workshop had {V} participants in total." |
+| money | money | "The total comes to {V}." / "She paid {V} for the repair." |
+| phone | phone | "You can reach the office on {V}." / "My new number is {V}." |
+| birthday | date | "Her birthday is on {V}." / "His birthday falls on {V}." |
+| date_of_birth | date | "My date of birth is {V}." / "He was born on {V}." |
+| deadline | date | "The application deadline is {V}." / "Please submit your form by {V}." |
+| anniversary | date | "Their wedding anniversary is on {V}." / "They celebrate their anniversary on {V}." |
+| movie_release | date | "The film will be released on {V}." / "The movie comes out on {V}." |
+| date | date | "The meeting is scheduled for {V}." / "The event will take place on {V}." |
+| mixed | 随机 | 每次生成题目时先从上面9个（不含mixed自己）随机选一个subtype，再走该subtype的逻辑 |
+
+对话模式下，`spokenText` = 整句模板替换后的完整句子（TTS一次性朗读整句，这是对话测验比独立测验更难的地方——数字被淹没在语境里）；`promptText` = 同一句子，**只在用户提交答案之后才在界面上显示**（听的时候不能看到文字，纯听力），用于错题本回顾时展示"当时听的是哪句话"。`correctAnswer`/判分逻辑完全复用底层category的规则，不单独写一套。
+
+### API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/numbers/question | body `{mode, category, subtype}` → 生成一题存入内存，返回 `{questionId, spokenText}`。**响应体禁止包含correctAnswer或promptText**（防止提前泄题，即使是自己用也要养成不泄题的习惯，方便以后如果给学生用） |
+| POST | /api/numbers/answer | body `{questionId, userAnswer, examSessionId?}` → 判分、写入`number_drill_attempts`、内存里删掉该questionId（一次性作答，同一个questionId不能提交第二次，第二次返回400）。返回 `{isCorrect, correctAnswer, promptText}` |
+| GET | /api/numbers/mistakes?limit=20 | 最近的错题列表，按attempted_at倒序 |
+| GET | /api/numbers/stats | 总体正确率、各category正确率、总答题数 |
+| POST | /api/numbers/exam/start | body `{questionCount, categories}` → 返回 `{examSessionId}`（`crypto.randomUUID()`，不用建表） |
+| GET | /api/numbers/exam/:sessionId/summary | 汇总该session下的attempts：`{score, total, byCategory}` |
+
+### 页面（复用现有SPA的配色/卡片风格，见前面"UI设计方向"章节，不要另起一套视觉语言）
+
+1. **数字听力首页**：大按钮"开始数字测验"（点击直接进入number类别standalone练习）+ 两个小卡片"错题"/"统计" + "进阶测验"2x2网格（日期/时间/金额/手机号码，standalone模式）+ "考试模式"入口条 + "对话测验"网格（混合/一般数字/金额/手机号码/生日/出生日期/截止日期/纪念日/电影上映/日期，共10个，dialogue模式）。全部入口默认可点，没有PRO锁。
+2. **单题练习界面**：喇叭按钮播放`spokenText`（可无限次重播，非考试模式下不限重播次数），文本输入框，提交后立刻显示对/错+正确答案，"下一题"按钮换同类别下一题。
+3. **考试模式界面**：开始前选题量（默认10题，从5个category里混合随机出题），每题限时倒计时（默认20秒，超时按错误自动提交），重播按钮最多可点2次（第3次起置灰禁用），做完展示总分`X/N`+分类别正确率。
+4. **错题页**：列出最近的错题（对话模式的题要显示`prompt_text`让用户看清当时听的是哪句话），每条一个"重新练习这一类"按钮，跳转到对应category/subtype的单题练习界面。
+5. **统计页**：总正确率、各category正确率，样式仿照现有仪表盘的卡片（色块图标+大号数字）。
+
+在首页底部导航或现有首页找一个入口位置加一个"数字听力"图标链接过去，具体放哪由你判断最不突兀的位置，不用纠结。
+
+### 验收标准（必须给出可复现的证据，不接受"功能已实现/跑通不报错"）
+
+写一个新的测试脚本 `test_number_drill.js`：
+
+1. **date类别**：注入固定`now`使得可以稳定生成 day=21,month=3,year=2019 的题（测试时可以直接调用`generateQuestion`时传入一个mock随机数源，或者直接单测`ordinal`/`yearToWords`两个纯函数——`ordinal(21)`要等于`"twenty-first"`，`ordinal(11)`要等于`"eleventh"`，`ordinal(12)`要等于`"twelfth"`；`yearToWords(2019)`要等于`"twenty nineteen"`，`yearToWords(1990)`要等于`"nineteen ninety"`，`yearToWords(2000)`要等于`"two thousand"`）。断言用这三个值拼出的`spokenText`精确等于`"the twenty-first of March, twenty nineteen"`。
+2. 对`correctAnswer="2019-03-21"`分别用`gradeAnswer`校验：提交`"21/03/2019"`、`"2019-03-21"`、`"21-03-2019"`都返回`true`；提交`"22/03/2019"`返回`false`。
+3. **time类别**：断言 hour=15,minute=45 生成的`spokenText`等于`"quarter to four in the afternoon"`，`correctAnswer`等于`"15:45"`；`gradeAnswer`对`"3:45pm"`、`"15:45"`返回`true`，对`"3:45am"`返回`false`。
+4. **money类别**：固定生成£29.99，断言`spokenText`等于`"twenty-nine pounds and ninety-nine pence"`；`gradeAnswer`对`"29.99"`、`"£29.99"`返回`true`，对`"29.90"`返回`false`。
+5. **phone类别**：固定生成`"07911234567"`，断言`spokenText`按`", "`分割后有11段（逐位数字）；`gradeAnswer`对`"07911 234567"`、`"07911234567"`返回`true`，对少一位的`"0791123456"`返回`false`。
+6. **number类别**：固定生成`"4829"`，`gradeAnswer`对`"4829"`、`"4,829"`返回`true`，对`"4830"`返回`false`。
+7. 断言`DIALOGUE_TEMPLATES`里每个subtype至少有2条模板，且把`{V}`替换成任意字符串后，结果字符串里不再包含`"{V}"`这个占位符。
+8. curl实测（贴出响应体作为证据）：
+   - `POST /api/numbers/question` 响应JSON里**不含**`correctAnswer`或`promptText`字段。
+   - 用拿到的`questionId`提交一个错误答案到`/api/numbers/answer`，断言响应`isCorrect:false`且带出`correctAnswer`；用**同一个**`questionId`再提交一次，断言返回400。
+   - `GET /api/numbers/mistakes`能看到刚才那条错题。
+   - 连续提交2题（1对1错），`GET /api/numbers/stats`里对应的总正确率数值等于50%。
+   - `POST /api/numbers/exam/start`拿到`examSessionId`，用这个session提交3道题（2对1错），`GET /api/numbers/exam/:id/summary`断言`score=2, total=3`。
+9. 回归测试：跑一遍现有的`test_srs.js`/`test_spelling.js`/`test_practice.js`/`test_speech.js`/`test_ui.js`/`test_listening.js`，确认全部依然通过，18+21张现有卡片数据不受影响。
+10. 手机浏览器（或Chrome移动模式）打开新增的"数字听力"入口，截图确认无横向滚动、视觉风格跟首页一致（暖色卡片、圆角、配色沿用现有变量）。
+
+本轮**只在本地** `D:\Codex工作区\ielts-review-tool` 开发和测试，不部署、不碰PM2、不推GitHub。改完在本地起一个开发服务器供用户在浏览器直接测试，等用户确认没问题再进入部署轮次。
+
+## 数字听力模块：分类配色 + 喇叭点击打断输入（2026-09-09 追加，用户实测反馈）
+
+用户用手机截图反馈两个问题：
+
+### 问题1：所有类型的测验区块视觉上完全一样，分不清类型
+现在"进阶测验"（日期/时间/金额/手机号码）和"对话测验"（10个subtype）的每个入口卡片都是纯白底+同一个粉色箭头，用户要求**用不同颜色区分不同类型**。参照用户给的Numblr原图配色逻辑（日期=红色日历图标、时间=蓝色时钟图标、金额=绿色$图标、手机号码=紫色电话图标），定下这套配色方案：
+
+| category | 主题色 hex | 图标 |
+|---|---|---|
+| number（一般数字） | `#FF8A65`（复用现有听力橙） | `#` |
+| date（日期） | `#FF6B6B`（珊瑚红） | 📅 |
+| time（时间） | `#5B9DFF`（天蓝，新增） | 🕐 |
+| money（金额） | `#3CBE8B`（薄荷绿，新增，区别于阅读色4ECDC4避免混淆） | 💰 |
+| phone（手机号码） | `#9C8CFB`（复用现有写作紫） | 📞 |
+
+在CSS里新增对应的自定义属性（放进现有变量体系旁边，比如 `--num-number` `--num-date` `--num-time` `--num-money` `--num-phone`），每个"进阶测验"入口卡片：左侧一个圆形/圆角色块图标（用上表的主题色做背景，图标用对应emoji或简单SVG），卡片本身可以保留白底，但加一条对应主题色的左边框或图标色块，明确用颜色区分开——不要做成花花绿绿的整块背景，延续现有"白卡片+色块图标点缀"的克制风格（同首页统计卡片的视觉语言，不要另起一套）。
+
+"对话测验"的10个subtype入口，按其底层category上色（对照关系见前面《对话测验：句子模板》章节的subtype→category映射表）：
+- `general` → number橙+`#`图标
+- `money` → 金额绿+💰图标
+- `phone` → 电话紫+📞图标
+- `birthday`/`date_of_birth`/`deadline`/`anniversary`/`movie_release`/`date` 这6个都是日期语义的变体 → 统一用date红色块，但各自换一个贴合语义的emoji图标区分（🎂生日、👶出生日期、⏰截止日期、💍纪念日、🎬电影上映、📅日期），让用户一眼能看出"这6个都是日期类，只是场景不同"
+- `mixed`（混合）→ 用一个明显区别于其他5种主题色的中性处理（比如灰紫色`#8E8A94`背景+🔀图标，暗示"随机混合"，不要用任何一个具体category的颜色，否则会让用户误以为mixed偏向某个类型）
+
+"独立数字测验"入口（点击"开始数字测验"进入的那个number类别页面）、考试模式入口条，也按各自类别/性质配上对应颜色（考试模式本身不对应单一category，可以用现有首页头图的珊瑚橙→樱花粉渐变，呼应"进阶/正式"的分量感）。
+
+### 问题2：点击喇叭播放按钮后，无法继续在答案输入框里打字，必须先点别处
+用户原话："点击喇叭的时候，我仍然能够在输入框输入答案，而不是把鼠标点击到别的地方，就无法输入了，点击喇叭不影响输入"。
+
+**这不是单纯的焦点丢失**（焦点丢失顶多是"再点一下输入框就好"，用户描述的是点完喇叭之后输入框整个进入某种不可用/失效状态，必须先点击页面别的地方才能恢复）。大概率原因：播放按钮的点击处理函数触发了整个练习面板的重新渲染（比如调用了跟"下一题"共用的同一个 `renderQuestion()` / 整段 `innerHTML` 重建逻辑），导致输入框DOM节点被销毁重建，用户当前的焦点/输入状态跟着失效。
+
+**修复要求**：
+1. 自己去看 `public/numbers.js` 里播放按钮（`#number-play`）的点击处理函数在做什么，确认是否触发了不必要的DOM重建。播放喇叭**只应该**做一件事——调用 `speechSynthesis` 朗读，不应该触发练习面板任何部分的重新渲染，不应该改变/替换 `#number-answer` 输入框（或考试模式下对应的输入框）的DOM节点，不应该把输入框设为disabled/readonly。
+2. 播放按钮本身如果是 `<button>` 且处于 `<form>` 内，要显式加 `type="button"`，避免触发表单提交/隐式reset。
+3. 修完后，用户应该能做到：点击喇叭听题 → 不点别处、直接在输入框里连续打字 → 正常输入 → 提交。反复点喇叭重播多次，中途穿插打字，输入不能被打断或清空。
+
+**验收标准（追加到 `scripts/test_number_browser.js` 现有的CDP浏览器测试里，不要另起一套测试机制）：**
+1. 颜色断言：用CDP的 `getComputedStyle` 断言 `--num-date`/`--num-time`/`--num-money`/`--num-phone`/`--num-number` 这几个CSS自定义属性的值分别等于上表定的hex；再断言"进阶测验"里"日期"入口卡片实际渲染出来的图标色块背景色跟 `--num-date` 一致（不能只是定义了变量没真的用上）。
+2. 喇叭不打断输入：**必须用真实的 `Input.dispatchMouseEvent`（获取按钮实际 `getBoundingClientRect()` 坐标后模拟真实鼠标按下+抬起）点击喇叭按钮，不能用 `element.click()` 这种JS合成点击**——因为合成点击不会触发浏览器原生的焦点转移语义，测不出真实的这个bug。点击喇叭后，紧接着用 `Input.dispatchKeyEvent` 模拟真实键盘按键，逐字符输入一个测试答案到 `#number-answer`，断言输入框最终的 `.value` 等于输入的内容（证明确实能直接打字，不需要先点别处）。这一步在进入练习页面首次播放时测一次，再点一次喇叭重播后紧接着追加打字测一次，两种情况都要覆盖。
+3. 回归：现有 `test_number_drill.js` 全部10项 + 之前 `scripts/test_number_browser.js` 里的既有断言不能因为这次UI改动而挂掉，跑一遍确认。
+4. 移动端390×844截图（复用现有screenshot辅助函数）：新增一张"进阶测验+对话测验"页面截图，人工看一眼确认5种颜色能明显区分开（不需要写自动化断言，截图留证据即可，跟前面章节"手机浏览器截图无横向滚动"的验收方式一致）。
+
+不部署、不碰PM2、不推GitHub，继续用本地开发服务器验证。

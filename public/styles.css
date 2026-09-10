@@ -1,6 +1,12 @@
 :root {
   --cream: #FDF6F2;
   --coral: #FF8A65;
+  --num-number: #FF8A65;
+  --num-date: #FF6B6B;
+  --num-time: #5B9DFF;
+  --num-money: #3CBE8B;
+  --num-phone: #9C8CFB;
+  --num-mixed: #8E8A94;
   --mint: #4ECDC4;
   --pink: #FF6FA5;
   --purple: #9C8CFB;
@@ -10,6 +16,39 @@
   --shadow: 0 4px 16px rgba(68, 45, 53, .06);
   --radius: 20px;
 }
+
+.number-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.number-tile { border: 0; padding: 20px 16px; text-align: left; color: var(--ink); display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+[data-num-theme="number"] { --num-accent: var(--num-number); }
+[data-num-theme="date"] { --num-accent: var(--num-date); }
+[data-num-theme="time"] { --num-accent: var(--num-time); }
+[data-num-theme="money"] { --num-accent: var(--num-money); }
+[data-num-theme="phone"] { --num-accent: var(--num-phone); }
+[data-num-theme="mixed"] { --num-accent: var(--num-mixed); }
+.number-icon { display: inline-grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 12px; background: var(--num-accent); color: white; font-size: 20px; font-weight: 800; vertical-align: middle; }
+.number-label { flex: 1; min-width: 0; }
+.number-arrow { color: var(--num-accent); }
+.number-practice[data-num-theme] { border-top: 4px solid var(--num-accent); }
+.numbers-page [data-num-theme] .primary-button { background: var(--num-accent); }
+.number-tile:hover { background: #FFF0F5; }
+.numbers-page .number-hero { margin: 0 0 18px; border-radius: var(--radius); min-height: auto; padding: 24px; }
+.number-hero button { position: relative; z-index: 1; }
+.numbers-page .number-exam-entry { width: 100%; border: 0; padding: 22px 16px; margin-top: 22px; text-align: left; font-weight: 700; color: var(--ink); background: linear-gradient(135deg, #FFB199, #FF8FB1); }
+.number-exam-entry span { display: block; color: var(--ink); font-size: 13px; margin-top: 8px; }
+.number-practice { padding: 24px; margin-bottom: 18px; text-align: center; }
+.numbers-page .number-speaker { width: 90px; height: 90px; border-radius: 50%; font-size: 36px; margin-top: 22px; }
+.number-practice form { display: grid; gap: 14px; text-align: left; }
+.number-practice input { min-width: 0; width: 100%; margin: 12px 0; padding: 14px; border: 1px solid #EDE7EA; border-radius: 14px; background: var(--cream); color: var(--ink); }
+.number-practice > button[type=submit] { margin-top: 16px; }
+.number-status, #number-play-status { color: var(--muted); }
+.number-correct { color: #258E86; }
+.number-wrong { color: #BF4967; }
+.number-prompt { line-height: 1.7; overflow-wrap: anywhere; }
+.number-mistake { padding: 20px; margin-bottom: 16px; overflow-wrap: anywhere; }
+.number-mistake .number-tile { background: var(--cream); width: 100%; }
+.numbers-page .page-header { gap: 8px; }
+.numbers-page .page-header .text-link { flex-shrink: 0; }
+.numbers-page button:disabled { opacity: .4; cursor: not-allowed; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--cream); color: var(--ink); }

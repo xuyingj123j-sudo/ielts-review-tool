@@ -34,7 +34,7 @@
     const synth = options.synth || globalThis.speechSynthesis;
     const Utterance = options.Utterance || globalThis.SpeechSynthesisUtterance;
     const voice = getEnglishVoice(synth);
-    if (!hasEnglish(text) || !voice || typeof Utterance !== 'function') return false;
+    if (!(hasEnglish(text) || (options.allowNumeric && /\d/.test(String(text)))) || !voice || typeof Utterance !== 'function') return false;
 
     synth.cancel();
     const utterance = new Utterance(String(text));

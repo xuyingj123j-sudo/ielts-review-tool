@@ -112,6 +112,19 @@ class ReviewDatabase {
         check_retention INTEGER NOT NULL CHECK (check_retention IN (0, 1)),
         notes TEXT
       );
+      CREATE TABLE IF NOT EXISTS number_drill_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL CHECK (mode IN ('standalone','dialogue','exam')),
+        category TEXT NOT NULL CHECK (category IN ('number','date','time','money','phone')),
+        subtype TEXT,
+        prompt_text TEXT,
+        spoken_text TEXT NOT NULL,
+        correct_answer TEXT NOT NULL,
+        user_answer TEXT NOT NULL,
+        is_correct INTEGER NOT NULL CHECK (is_correct IN (0, 1)),
+        exam_session_id TEXT,
+        attempted_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(next_review_date);
       CREATE INDEX IF NOT EXISTS idx_cards_filters ON cards(skill, type, box);
       CREATE INDEX IF NOT EXISTS idx_review_logs_date ON review_logs(reviewed_at);
@@ -119,6 +132,8 @@ class ReviewDatabase {
       CREATE INDEX IF NOT EXISTS idx_writing_completions_date ON writing_completions(completed_at);
       CREATE INDEX IF NOT EXISTS idx_listening_sections_stage ON listening_sections(section_number, test_id);
       CREATE INDEX IF NOT EXISTS idx_listening_attempts_stage_recent ON listening_attempts(section_id, attempt_date DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_number_drill_attempts_recent ON number_drill_attempts(attempted_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_number_drill_exam_session ON number_drill_attempts(exam_session_id, id);
     `);
 
     const writingColumns = this.connection.pragma('table_info(writing_completions)');
@@ -415,6 +430,39 @@ class ReviewDatabase {
       )
     `).run(attempt);
     return this.connection.prepare('SELECT * FROM listening_attempts WHERE id = ?').get(result.lastInsertRowid);
+  }
+
+  createNumberDrillAttempt(attempt) {
+    const result = this.connection.prepare(`
+      INSERT INTO number_drill_attempts (
+        mode, category, subtype, prompt_text, spoken_text, correct_answer,
+        user_answer, is_correct, exam_session_id, attempted_at
+      ) VALUES (
+        @mode, @category, @subtype, @promptText, @spokenText, @correctAnswer,
+        @userAnswer, @isCorrect, @examSessionId, @attemptedAt
+      )
+    `).run(attempt);
+    return this.connection.prepare('SELECT * FROM number_drill_attempts WHERE id = ?').get(result.lastInsertRowid);
+  }
+
+  numberDrillMistakes(limit) {
+    return this.connection.prepare(`
+      SELECT * FROM number_drill_attempts
+      WHERE is_correct = 0
+      ORDER BY attempted_at DESC, id DESC
+      LIMIT ?
+    `).all(limit);
+  }
+
+  numberDrillStats(examSessionId = null) {
+    const where = examSessionId === null ? '' : 'WHERE exam_session_id = ?';
+    return this.connection.prepare(`
+      SELECT category, COUNT(*) AS total, SUM(is_correct) AS correct
+      FROM number_drill_attempts
+      ${where}
+      GROUP BY category
+      ORDER BY category
+    `).all(...(examSessionId === null ? [] : [examSessionId]));
   }
 
   close() {

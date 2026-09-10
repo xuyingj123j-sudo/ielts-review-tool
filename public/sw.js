@@ -1,5 +1,5 @@
-const CACHE = 'ielts-review-v6';
-const SHELL = ['/', '/styles.css', '/card-ui.js', '/speech.js', '/app.js', '/manifest.json', '/icons/app-icon.svg'];
+const CACHE = 'ielts-review-v7';
+const SHELL = ['/', '/styles.css', '/card-ui.js', '/speech.js', '/numbers.js', '/app.js', '/manifest.json', '/icons/app-icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

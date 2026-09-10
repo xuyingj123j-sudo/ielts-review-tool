@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { SKILLS, DAILY_TASK_SKILLS, TYPES } = require('./db');
 const { addDays, toLocalDate, transition } = require('./domain/srs');
 const { answerMatches } = require('./domain/answerMatch');
@@ -11,8 +12,15 @@ const {
   isQualifiedAttempt,
   parseTranscriptSegments
 } = require('./domain/listening');
+const {
+  CATEGORIES,
+  DIALOGUE_SUBTYPES,
+  generateQuestion,
+  gradeAnswer
+} = require('./domain/numberDrill');
 
 const WEEKLY_WRITING_TARGET = 1;
+const NUMBER_QUESTION_TTL_MS = 10 * 60 * 1000;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -38,6 +46,7 @@ class ReviewService {
   constructor(database, clock = () => new Date()) {
     this.db = database;
     this.clock = clock;
+    this.pendingNumberQuestions = new Map();
   }
 
   listCards(query) {
@@ -334,6 +343,134 @@ class ReviewService {
       stages: this.listeningProgress()
     };
   }
+
+  cleanupNumberQuestions() {
+    const cutoff = this.clock().getTime() - NUMBER_QUESTION_TTL_MS;
+    for (const [questionId, question] of this.pendingNumberQuestions) {
+      if (question.createdAt <= cutoff) this.pendingNumberQuestions.delete(questionId);
+    }
+  }
+
+  numberQuestion(input) {
+    this.cleanupNumberQuestions();
+    const mode = input?.mode;
+    if (!['standalone', 'dialogue', 'exam'].includes(mode)) throw new HttpError(400, '数字听力模式无效');
+    if (mode === 'dialogue') {
+      if (!DIALOGUE_SUBTYPES.includes(input?.subtype)) throw new HttpError(400, '对话测验类型无效');
+    } else if (!CATEGORIES.includes(input?.category)) {
+      throw new HttpError(400, '数字听力类别无效');
+    }
+    const question = generateQuestion({
+      mode,
+      category: input?.category,
+      subtype: mode === 'dialogue' ? input.subtype : null,
+      now: this.clock()
+    });
+    const questionId = crypto.randomUUID();
+    this.pendingNumberQuestions.set(questionId, {
+      correctAnswer: question.correctAnswer,
+      category: question.category,
+      subtype: question.subtype,
+      mode: question.mode,
+      promptText: question.promptText,
+      spokenText: question.spokenText,
+      createdAt: this.clock().getTime()
+    });
+    return { questionId, spokenText: question.spokenText };
+  }
+
+  answerNumberQuestion(input) {
+    this.cleanupNumberQuestions();
+    const questionId = typeof input?.questionId === 'string' ? input.questionId.trim() : '';
+    if (typeof input?.userAnswer !== 'string' || input.userAnswer.length > 5000) {
+      throw new HttpError(400, '答案必须是5000字以内的文本');
+    }
+    const userAnswer = input.userAnswer;
+    const question = this.pendingNumberQuestions.get(questionId);
+    if (!question) throw new HttpError(400, '题目不存在、已作答或已过期');
+    let examSessionId = null;
+    if (question.mode === 'exam') {
+      examSessionId = typeof input?.examSessionId === 'string' ? input.examSessionId.trim() : '';
+      if (!examSessionId || examSessionId.length > 100) throw new HttpError(400, '考试 session id 无效');
+    }
+    const isCorrect = gradeAnswer({
+      category: question.category,
+      correctAnswer: question.correctAnswer,
+      userAnswer
+    });
+    this.db.createNumberDrillAttempt({
+      mode: question.mode,
+      category: question.category,
+      subtype: question.subtype,
+      promptText: question.promptText,
+      spokenText: question.spokenText,
+      correctAnswer: question.correctAnswer,
+      userAnswer,
+      isCorrect: Number(isCorrect),
+      examSessionId,
+      attemptedAt: localDateTime(this.clock())
+    });
+    this.pendingNumberQuestions.delete(questionId);
+    return { isCorrect, correctAnswer: question.correctAnswer, promptText: question.promptText };
+  }
+
+  numberMistakes(limitValue) {
+    this.cleanupNumberQuestions();
+    const limit = limitValue === undefined ? 20 : Number(limitValue);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, 'limit 必须是 1-100 的整数');
+    return this.db.numberDrillMistakes(limit).map((attempt) => ({
+      ...attempt,
+      is_correct: Boolean(attempt.is_correct)
+    }));
+  }
+
+  numberStats() {
+    this.cleanupNumberQuestions();
+    const rows = this.db.numberDrillStats();
+    const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, { total: 0, correct: 0, accuracy: null }]));
+    for (const row of rows) {
+      byCategory[row.category] = {
+        total: row.total,
+        correct: row.correct,
+        accuracy: Math.round(row.correct * 100 / row.total)
+      };
+    }
+    const total = rows.reduce((sum, row) => sum + row.total, 0);
+    const correct = rows.reduce((sum, row) => sum + row.correct, 0);
+    return { total, correct, accuracy: total ? Math.round(correct * 100 / total) : null, byCategory };
+  }
+
+  startNumberExam(input) {
+    this.cleanupNumberQuestions();
+    const questionCount = Number(input?.questionCount);
+    const categories = input?.categories;
+    if (!Number.isInteger(questionCount) || questionCount < 1 || questionCount > 100) {
+      throw new HttpError(400, '考试题量必须是 1-100 的整数');
+    }
+    if (!Array.isArray(categories) || !categories.length || categories.some((category) => !CATEGORIES.includes(category))) {
+      throw new HttpError(400, '考试类别无效');
+    }
+    return { examSessionId: crypto.randomUUID() };
+  }
+
+  numberExamSummary(sessionId) {
+    this.cleanupNumberQuestions();
+    if (typeof sessionId !== 'string' || !sessionId.trim()) throw new HttpError(400, '考试 session id 无效');
+    const rows = this.db.numberDrillStats(sessionId.trim());
+    const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, { score: 0, total: 0, accuracy: null }]));
+    for (const row of rows) {
+      byCategory[row.category] = {
+        score: row.correct,
+        total: row.total,
+        accuracy: Math.round(row.correct * 100 / row.total)
+      };
+    }
+    return {
+      score: rows.reduce((sum, row) => sum + row.correct, 0),
+      total: rows.reduce((sum, row) => sum + row.total, 0),
+      byCategory
+    };
+  }
 }
 
-module.exports = { HttpError, ReviewService, WEEKLY_WRITING_TARGET, localDateTime };
+module.exports = { HttpError, NUMBER_QUESTION_TTL_MS, ReviewService, WEEKLY_WRITING_TARGET, localDateTime };

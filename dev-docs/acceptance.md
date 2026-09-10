@@ -1,5 +1,20 @@
 # 验收记录
 
+## 2026-09-09 数字听力专项本地验收
+
+完成 `git diff` 自审并修正后执行 `node test_number_drill.js`，退出码0。脚本包含 SPEC 数字专项全部10项及六套旧回归；真实 HTTP 用 `curl.exe` 调用临时端口服务，测试数据不写入真实库。
+
+- 1–7：固定日期、时间、金额、手机号、一般数字精确样例全部通过；日期闰年/两位年份、am/pm、整数金额、所有模板和 mixed 九个具体场景有确定性断言。原 mixed 分派实现正确，未重做。
+- 8：question 响应只有 questionId/spokenText；错误作答带出正确答案与题干，重复提交400；错题可查，2题1对的 accuracy=50；同 session 3题2对的 summary score=2,total=3。空答案可记错、原始空格保留、满10分钟过期均通过。
+- 9：test_srs.js / test_spelling.js / test_practice.js / test_speech.js / test_ui.js / test_listening.js 全部退出码0；实际库39张卡片及全部既有业务表逐行前后不变；18张旧卡普通加列迁移另由拼写回归覆盖。
+- 10：无头 Chrome 移动模式，390×844和320×700均 width=scrollWidth=bodyScrollWidth；五页、10个对话入口、错题重练、提交前隐藏题干、纯数字朗读调用、无限重播、考试2次播放、真实20秒超时自动空答、1/2成绩和离页21秒无新增答题均通过。页面截图已人工查看，沿用暖色渐变、白色20px圆角卡片与原导航；检查后清理截图。系统语音 API 在自动化里做 mock，真实设备声音需用户试听。
+
+本轮补齐 `public/numbers.js`、`test_number_drill.js` 及永久浏览器验收配套 `scripts/test_number_browser.js`；修复空答案拒绝、原始输入被trim、过期边界、金额畸形输入被误判及纯数字无法朗读。`git diff --check` 和工程 guardrails 均退出码0。
+
+开发服务器保留在 http://127.0.0.1:3109/ ，PID 12376，监听0.0.0.0:3109；根页面、numbers.js、数字统计接口均HTTP200。新模块真实统计 total=0；服务器启动前后 cards SHA256 均为 `70f28e1b18fcb47046095e25cf9f77d78ae0ba2adecdceaaccf3236a12538344`，count=39。运行使用原 data/ielts.db，后续用户练习会正常写入专项答题表。
+
+本轮没有部署、PM2操作、Git提交或推送。测试数据库和隔离Chrome profile自动删除，人工复核截图目录也已清理。
+
 验收标准以 [`../SPEC.md`](../SPEC.md) 第 1-7 条为准。本文件用于保存实际命令和结果，实施后回写证据，不以描述代替输出。
 
 ## 当前状态

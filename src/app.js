@@ -41,6 +41,12 @@ function createApp(service, options = {}) {
   app.post('/api/listening/sections/:id/attempts', (req, res) => {
     res.status(201).json(service.recordListeningAttempt(parseId(req.params.id, 'Section'), req.body || {}));
   });
+  app.post('/api/numbers/question', (req, res) => res.status(201).json(service.numberQuestion(req.body || {})));
+  app.post('/api/numbers/answer', (req, res) => res.status(201).json(service.answerNumberQuestion(req.body || {})));
+  app.get('/api/numbers/mistakes', (req, res) => res.json(service.numberMistakes(req.query.limit)));
+  app.get('/api/numbers/stats', (req, res) => res.json(service.numberStats()));
+  app.post('/api/numbers/exam/start', (req, res) => res.status(201).json(service.startNumberExam(req.body || {})));
+  app.get('/api/numbers/exam/:sessionId/summary', (req, res) => res.json(service.numberExamSummary(req.params.sessionId)));
 
   const publicDir = path.join(__dirname, '..', 'public');
   const audioDir = options.audioDir || path.join(__dirname, '..', 'data', 'audio');

@@ -1,0 +1,130 @@
+﻿✓ 1 日期生成：the twenty-first of March, twenty nineteen；序数词、年份、闰年断言通过
+✓ 2 日期判分：三种指定格式、两位年份边界及错误日期通过
+✓ 3 时间：quarter to four in the afternoon / 15:45；am/pm及拼读分支通过
+✓ 4 金额：£29.99 自然语言精确匹配；无符号/单位容错、整数金额通过
+✓ 5 手机号：07911234567 逐位朗读11段；空格容错和缺位错误通过
+✓ 6 一般数字：固定生成4829；4829、4,829正确，4830错误
+✓ 7 模板：10个入口均有模板；mixed确定性遍历9个具体subtype，类别与场景均匹配
+TEST_SERVER=http://127.0.0.1:56755 PID=28844（随测试关闭）
+curl POST /api/numbers/question → 201 {"questionId":"cf3ea122-4a98-485a-9fd3-0c7ac9883052","spokenText":"There are 26672 students enrolled in the course this year."}
+curl POST /api/numbers/answer → 201 {"isCorrect":false,"correctAnswer":"26672","promptText":"There are 26672 students enrolled in the course this year."}
+curl POST /api/numbers/answer → 400 {"error":"题目不存在、已作答或已过期"}
+curl GET /api/numbers/mistakes → 200 [{"id":1,"mode":"dialogue","category":"number","subtype":"general","prompt_text":"There are 26672 students enrolled in the course this year.","spoken_text":"There are 26672 students enrolled in the course this year.","correct_answer":"26672","user_answer":"wrong","is_correct":false,"exam_session_id":null,"attempted_at":"2026-09-09 05:00:00"}]
+curl POST /api/numbers/question → 201 {"questionId":"621cd528-be79-4b9a-9cb4-eb0709a0cfff","spokenText":"1137217"}
+curl POST /api/numbers/answer → 201 {"isCorrect":true,"correctAnswer":"1137217","promptText":null}
+curl GET /api/numbers/stats → 200 {"total":2,"correct":1,"accuracy":50,"byCategory":{"number":{"total":2,"correct":1,"accuracy":50},"date":{"total":0,"correct":0,"accuracy":null},"time":{"total":0,"correct":0,"accuracy":null},"money":{"total":0,"correct":0,"accuracy":null},"phone":{"total":0,"correct":0,"accuracy":null}}}
+curl POST /api/numbers/exam/start → 201 {"examSessionId":"c8199613-f843-497a-ba0c-ffad2f7be781"}
+curl POST /api/numbers/question → 201 {"questionId":"057cc7ed-4fb8-41df-bdbf-864cbd486baa","spokenText":"27"}
+curl POST /api/numbers/answer → 201 {"isCorrect":true,"correctAnswer":"27","promptText":null}
+curl POST /api/numbers/question → 201 {"questionId":"9720fd29-8d7f-490d-8982-e145d8464b7f","spokenText":"the third of February, nineteen eighty-three"}
+curl POST /api/numbers/answer → 201 {"isCorrect":true,"correctAnswer":"1983-02-03","promptText":null}
+curl POST /api/numbers/question → 201 {"questionId":"68635234-b04c-49a6-aa27-6acbe2d806ab","spokenText":"five past one in the morning"}
+curl POST /api/numbers/answer → 201 {"isCorrect":false,"correctAnswer":"01:05","promptText":null}
+curl GET /api/numbers/exam/c8199613-f843-497a-ba0c-ffad2f7be781/summary → 200 {"score":2,"total":3,"byCategory":{"number":{"score":1,"total":1,"accuracy":100},"date":{"score":1,"total":1,"accuracy":100},"time":{"score":0,"total":1,"accuracy":0},"money":{"score":0,"total":0,"accuracy":null},"phone":{"score":0,"total":0,"accuracy":null}}}
+curl POST /api/numbers/answer → 400 {"error":"题目不存在、已作答或已过期"}
+curl POST /api/numbers/question → 400 {"error":"对话测验类型无效"}
+curl GET /api/numbers/mistakes?limit=0 → 400 {"error":"limit 必须是 1-100 的整数"}
+✓ 8 curl HTTP：不泄题、一次性提交、原始输入、错题、50%统计、考试2/3、空答案及10分钟过期全部通过
+移动端 home: {"width":390,"scroll":390,"body":390}，截图已生成
+颜色 date #FF6B6B 📅: rgb(255, 107, 107) = CSS变量渲染色
+颜色 time #5B9DFF 🕐: rgb(91, 157, 255) = CSS变量渲染色
+颜色 money #3CBE8B 💰: rgb(60, 190, 139) = CSS变量渲染色
+颜色 phone #9C8CFB 📞: rgb(156, 140, 251) = CSS变量渲染色
+颜色 mixed #8E8A94 🔀: rgb(142, 138, 148) = CSS变量渲染色
+颜色 number #FF8A65 #: rgb(255, 138, 101) = CSS变量渲染色
+颜色 money #3CBE8B 💰: rgb(60, 190, 139) = CSS变量渲染色
+颜色 phone #9C8CFB 📞: rgb(156, 140, 251) = CSS变量渲染色
+颜色 date #FF6B6B 🎂: rgb(255, 107, 107) = CSS变量渲染色
+颜色 date #FF6B6B 👶: rgb(255, 107, 107) = CSS变量渲染色
+颜色 date #FF6B6B ⏰: rgb(255, 107, 107) = CSS变量渲染色
+颜色 date #FF6B6B 💍: rgb(255, 107, 107) = CSS变量渲染色
+颜色 date #FF6B6B 🎬: rgb(255, 107, 107) = CSS变量渲染色
+颜色 date #FF6B6B 📅: rgb(255, 107, 107) = CSS变量渲染色
+颜色 number #FF8A65 #: rgb(255, 138, 101) = CSS变量渲染色
+✓ 分类颜色变量、14个进阶/对话图标实色、独立数字橙及考试渐变断言通过
+移动端 numbers: {"width":390,"scroll":390,"body":390}，截图已生成
+移动端 numbers-categories: {"width":390,"scroll":390,"body":390}，截图已生成
+移动端 numbers-320: {"width":320,"scroll":320,"body":320}，截图已生成
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"48"}
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"4829"}
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"48"}
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"4829"}
+移动端 practice: {"width":390,"scroll":390,"body":390}，截图已生成
+移动端 mistakes: {"width":390,"scroll":390,"body":390}，截图已生成
+移动端 stats: {"width":390,"scroll":390,"body":390}，截图已生成
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"48"}
+真实鼠标播放后逐字输入: {"same":true,"disabled":false,"readonly":false,"focused":true,"value":"4829"}
+✓ 独立/对话/考试：真实坐标点击首次播放输入48，重播追加29得到4829，原输入节点/焦点/可编辑状态均保留
+移动端 exam: {"width":390,"scroll":390,"body":390}，截图已生成
+移动端 summary: {"width":390,"scroll":390,"body":390}，截图已生成
+✓ 10 Chrome移动端：5页及10个对话入口、提交前隐藏题干、数字朗读、无限练习、考试2次播放/20秒超时/1:2成绩、离页停止、390/320无横向滚动通过；真实设备发声待用户试听
+
+> node test_srs.js
+✓ 旧库安全迁移断言通过：卡片 id=41 与复习日志 id=9 均保留；新增生词 id=42
+✓ front_audio 普通加列迁移断言通过：旧卡 id=41 保留且 front_audio = null
+✓ 每日任务表迁移断言通过：daily_tasks 已创建，且 task_date + skill 唯一
+✓ 写作记录表迁移断言通过：旧记录 id=7 保留，content 为 TEXT NOT NULL，历史空内容兼容为空字符串
+✓ front_audio API 断言通过：front = "She often goes to a ______ near her house."；front_audio = "She often goes to a keep-fit studio near her house."
+✓ 新卡立即入队断言通过：新卡ID 1 已出现在队列 [1]
+✓ 生词类型接口断言通过：新卡ID 2，type = 生词
+✓ SRS升箱断言通过：2 → 3 → 4
+✓ SRS降箱断言通过：4 → 1
+✓ 日期过滤断言通过：实际队列ID [3, 2, 4]；今天/昨天ID [4, 3]；明天ID 5 已排除
+✓ 连续3天断言通过：streak = 3
+✓ 中断后重计断言通过：streak = 1（不是4）
+✓ 今日任务接口断言通过：只生成听力/阅读/口语 3 项；切换 false → true → false；历史写作行不返回
+✓ 写作内容校验断言通过：不带 content 返回 400，空记录未写入
+✓ 写作长度边界断言通过：5000 字成功，5001 字返回 400
+✓ 写作完成接口断言通过：content 原文保存；最近7天完成 2 次 / 目标 1 次
+✓ 每周写作明细断言通过：返回 2 条 completed_at + content，最新内容 = "Some people believe public transport should be free.\nI partly agree with this view."
+✓ 每周复盘口径断言通过：每日任务听力 5/7、阅读 7/7、口语 6/7；四技能正确率 80%/33%/暂无/75%
+✓ 纯数据响应断言通过：复盘响应只包含周期、任务、技能统计与写作次数
+全部 SRS、三项每日任务、写作周记录与纯数据复盘测试通过。
+
+> node test_spelling.js
+✓ 公共判分复用断言通过：听力与卡片拼写均调用 src/domain/answerMatch.js
+✓ review_mode 普通加列迁移断言通过：18张旧卡完整保留且全部默认 flip
+✓ 提交前防泄露断言通过：拼写卡队列响应无 back 字段及 back 明文，保留仅供朗读的编码音源
+✓ 拼写正确自动判分断言通过：" FILM " 命中 movie/film，box 2 → 3
+✓ 拼写错误自动判分断言通过：box 4 → 1，响应 correct_answer = movie/film
+✓ 普通 flip 回归断言通过：旧卡仍走翻卡接口并由第1箱升到第2箱
+
+> node test_practice.js
+✓ 自由练习范围断言通过：全部2张，今天已复习1张，拼写卡不泄露back明文
+✓ 自由练习零落库断言通过：box=3→3, next=2026-09-07→2026-09-07, logs=0→0
+✓ 单卡练习零落库断言通过：box=3→3, next=2026-09-07→2026-09-07, logs=0→0
+✓ 正式复习回归通过：box=3→4, next=2026-09-07→2026-09-14, logs=0→1
+
+> node test_speech.js
+✓ front_audio 朗读断言通过：speak 文本 = "She often goes to a keep-fit studio near her house."，不是 front = "She often goes to a ______ near her house."
+✓ 旧卡向后兼容断言通过：front_audio 为 null 时 speak 文本回退为 front = "identify the different species of butterflies"
+✓ 拼写模式朗读断言通过：DOM不含back明文，点击喇叭时 speak 文本 = "movie/film"
+✓ 连续点击断言通过：第二次朗读再次先调用 cancel，没有排队叠加
+✓ 显示规则断言通过：纯中文“无处不在的”不生成喇叭；英文“ubiquitous”生成喇叭
+✓ 语音降级断言通过：无 en-GB 时选择 en-US；没有英文语音时安全返回且不朗读
+全部朗读功能测试通过。
+
+> node test_ui.js
+✓ note 动态标签断言通过：任意技能+句子对照均显示“错因（选填）”，其他类型显示“备注（选填）”
+✓ 写作录入 UI 合同断言通过：展开 textarea、取消、空内容拦截、携带 content 提交及周记录渲染均存在
+✓ front_audio 可见渲染合同断言通过：只在录入/编辑 textarea 回显，卡片库与复习正面只渲染 front
+✓ 拼写模式 UI 合同断言通过：表单开关、专用复习表单、背面朗读及提交前不渲染back均存在
+✓ 自由/单卡练习 UI 合同通过：清空入口、范围选择、卡片库点击和拼写只读提交路径均存在
+✓ 听力练习 UI 合同断言通过：默认展示原文挖空、提交answers后原地展示自动判分，完整原文/答案仍可隐藏查看，5项表单保留
+全部字段标签 UI 规则测试通过。
+
+> node test_listening.js
+✓ 真实原文挖空断言通过：blank number = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]，换行边界只挖掉 egg
+✓ 多选一答案领域断言通过：Q6 填 movie 或 film 均为 10/10
+✓ 听力试运行数据合同断言通过：共 4 个 Part，Section = [1, 2, 3, 4]
+✓ 音频静态路由断言通过：HTTP 200，Content-Type = audio/mpeg
+✓ 错题与容错断言通过：" Egg " 判对；Q2 判错并返回 correct_answer = tower；总分 9/10
+✓ 单条达标记录断言通过：Section2 仍为 locked，Section1 连续达标 1/3
+✓ 阶段解锁断言通过：Section1 最近3条均达标后，Section2 locked → unlocked
+✓ checklist 不达标断言通过：自动判分 10/10 但只勾4项，qualified=false，Section3 未误解锁
+✓ 分数阈值断言通过：6/10 即使5项全勾也不达标
+✓ HTML 解析器断言通过：只提取 Test1 Part1-4，并分离标题、原文与答案
+全部听力真题练习模块测试通过。
+✓ 9 六套回归通过；真实库39张卡片及全部既有业务表逐行前后不变（18张旧卡迁移由test_spelling覆盖）
+全部数字听力10项验收通过。
+测试服务器已关闭，临时数据库/profile已清理；PID=28844 即将自然退出

@@ -46,9 +46,10 @@ function setActiveNav(page) {
 }
 
 async function navigate(page) {
+  window.IeltsNumbers?.dispose();
   state.page = page;
   state.editingId = page === 'entry' ? state.editingId : null;
-  setActiveNav(['progress', 'weekly', 'listening', 'listening-practice'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
+  setActiveNav(['progress', 'weekly', 'listening', 'listening-practice', 'numbers'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
   loading();
   window.scrollTo({ top: 0, behavior: 'smooth' });
   try {
@@ -61,6 +62,7 @@ async function navigate(page) {
     if (page === 'weekly') await renderWeekly();
     if (page === 'listening') await renderListeningOverview();
     if (page === 'listening-practice') await renderListeningPractice(state.listeningSectionId);
+    if (page === 'numbers') window.IeltsNumbers.mount({ root, api, escapeHtml, speech, showToast });
   } catch (error) {
     root.innerHTML = `<div class="card empty-state"><div class="emoji">⚠️</div><h2>暂时没有加载成功</h2><p>${escapeHtml(error.message)}</p><button class="primary-button" id="retry">再试一次</button></div>`;
     document.querySelector('#retry')?.addEventListener('click', () => navigate(page));
@@ -87,6 +89,11 @@ async function renderHome() {
       <div class="listening-module-icon">▶</div>
       <div><span class="badge listening">并列练习模块</span><h2>听力真题练习</h2><p>原文自动挖空并判分，连续达标后解锁下一阶段。</p></div>
       <button class="round-arrow listening-arrow" data-go="listening" aria-label="进入听力真题练习">→</button>
+    </article>
+    <article class="card listening-module-card">
+      <div class="listening-module-icon">123</div>
+      <div><h2>数字听力</h2><p>从数字、日期到真实对话，听清每一个细节。</p></div>
+      <button class="round-arrow" data-go="numbers" aria-label="进入数字听力">→</button>
     </article>
     <div class="section-heading"><h2>四项积累</h2><button class="text-link" data-go="progress">查看进度</button></div>
     <div class="grid skill-grid">${Object.entries(skillMeta).map(([skill, meta]) => `
