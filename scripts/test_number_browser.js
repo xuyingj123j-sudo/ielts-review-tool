@@ -134,8 +134,23 @@ async function browserTest(base, temp, service) {
     assert.match(await evaluate('spoken[0]'), /^\d{2,7}$/);
     await evaluate('document.querySelector("#number-answer").value=spoken[0];document.querySelector("#number-form").requestSubmit()');
     await waitFor('!!document.querySelector(".number-correct")');
+    assert.equal(await evaluate('!!document.querySelector("#number-feedback .number-spoken")'), false);
     await click('#number-next'); await waitFor('!!document.querySelector("#number-form")');
     await click('#numbers-home');
+    for (const category of ['time', 'date', 'money', 'phone']) {
+      for (const correct of [false, true]) {
+        await click(`[data-category="${category}"][data-subtype=""]`);
+        await waitFor('!!document.querySelector("#number-form")');
+        const pending = [...service.pendingNumberQuestions.values()].at(-1);
+        assert.equal(await evaluate('!!document.querySelector(".number-spoken")'), false);
+        await evaluate(`document.querySelector('#number-answer').value=${JSON.stringify(correct ? pending.correctAnswer : 'wrong')};document.querySelector('#number-form').requestSubmit()`);
+        await waitFor(`!!document.querySelector('.number-${correct ? 'correct' : 'wrong'}')`);
+        assert.equal(await evaluate('document.querySelector("#number-feedback .number-spoken em")?.textContent ?? null'), category === 'phone' ? null : pending.spokenText);
+        console.log(`✓ 读法 CDP standalone ${category} ${correct ? '答对' : '答错'}：${category === 'phone' ? '无读法提示' : pending.spokenText}`);
+        await click('#numbers-home');
+      }
+    }
+    console.log('✓ 读法 CDP 一般数字：答后无读法提示');
     for (const subtype of ['mixed', 'general', 'money', 'phone', 'birthday', 'date_of_birth', 'deadline', 'anniversary', 'movie_release', 'date']) {
       await click(`[data-subtype="${subtype}"]`); await waitFor('!!document.querySelector("#number-form")');
       if (subtype === 'date') await playbackInput();
@@ -145,6 +160,7 @@ async function browserTest(base, temp, service) {
       await evaluate('document.querySelector("#number-answer").value="wrong";document.querySelector("#number-form").requestSubmit()');
       await waitFor('!!document.querySelector(".number-prompt")');
       assert.equal(await evaluate('document.querySelector(".number-prompt").textContent'), pending.promptText);
+      if (subtype !== 'mixed') assert.equal(await evaluate('document.querySelector("#number-feedback .number-spoken em")?.textContent ?? null'), ['date', 'time', 'money'].includes(pending.category) ? pending.spokenText : null);
       if (subtype === 'date') await screenshot('practice');
       await click('#numbers-home');
     }

@@ -426,7 +426,7 @@ class ReviewService {
       attemptedAt: localDateTime(this.clock())
     });
     this.pendingNumberQuestions.delete(questionId);
-    return { isCorrect, correctAnswer: question.correctAnswer, promptText: question.promptText };
+    return { isCorrect, correctAnswer: question.correctAnswer, promptText: question.promptText, spokenText: question.spokenText };
   }
 
   numberMistakes(limitValue) {

@@ -89,7 +89,8 @@ window.IeltsNumbers = (() => {
           const result = await post('answer', { questionId: question.questionId, userAnswer: timedOut ? '' : input.value, ...(exam ? { examSessionId: exam.id } : {}) });
           if (token !== generation) return;
           answered = true;
-          panel.querySelector('#number-feedback').innerHTML = `<h2 class="${result.isCorrect ? 'number-correct' : 'number-wrong'}">${timedOut ? '时间到 · 回顾答案' : result.isCorrect ? '答对了 ✓' : '再记一次'}</h2><p>正确答案：<strong>${context.escapeHtml(result.correctAnswer)}</strong></p>${result.promptText ? `<p class="number-prompt">${context.escapeHtml(result.promptText)}</p>` : ''}`;
+          const category = config.mode === 'dialogue' ? subtypeCategories[config.subtype] : config.category;
+          panel.querySelector('#number-feedback').innerHTML = `<h2 class="${result.isCorrect ? 'number-correct' : 'number-wrong'}">${timedOut ? '时间到 · 回顾答案' : result.isCorrect ? '答对了 ✓' : '再记一次'}</h2><p>正确答案：<strong>${context.escapeHtml(result.correctAnswer)}</strong></p>${['date', 'time', 'money'].includes(category) ? `<p class="number-spoken">英语读作：<em>${context.escapeHtml(result.spokenText)}</em></p>` : ''}${result.promptText ? `<p class="number-prompt">${context.escapeHtml(result.promptText)}</p>` : ''}`;
           panel.querySelector('#number-next').hidden = false;
         } catch (error) {
           if (token !== generation) return;

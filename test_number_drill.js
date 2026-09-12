@@ -109,7 +109,8 @@ async function main() {
     await curl('answer', { questionId: q.questionId, userAnswer: 'wrong' }, 400);
     const mistakes = await curl('mistakes'); assert.equal(mistakes[0].prompt_text, q.spokenText);
     const q2 = await curl('question', { mode: 'standalone', category: 'number' });
-    await curl('answer', { questionId: q2.questionId, userAnswer: ` ${q2.spokenText} ` });
+    const numberAnswer = await curl('answer', { questionId: q2.questionId, userAnswer: ` ${q2.spokenText} ` });
+    assert.equal(numberAnswer.spokenText, q2.spokenText);
     assert.equal(database.connection.prepare('SELECT user_answer FROM number_drill_attempts ORDER BY id DESC LIMIT 1').get().user_answer, ` ${q2.spokenText} `);
     const stats = await curl('stats'); assert.equal(stats.total, 2); assert.equal(stats.accuracy, 50);
     const exam = await curl('exam/start', { questionCount: 3, categories: CATEGORIES });
@@ -127,6 +128,11 @@ async function main() {
     await curl('question', { mode: 'dialogue', subtype: 'invalid' }, 400);
     await curl('mistakes?limit=0', undefined, 400);
     console.log('✓ 8 curl HTTP：不泄题、一次性提交、原始输入、错题、50%统计、考试2/3、空答案及10分钟过期全部通过');
+    const timeQuestion = await curl('question', { mode: 'standalone', category: 'time' });
+    const timeAnswer = await curl('answer', { questionId: timeQuestion.questionId, userAnswer: 'wrong' });
+    assert.equal(timeAnswer.spokenText, timeQuestion.spokenText);
+    assert.match(timeAnswer.spokenText, /past|to|o'clock/);
+    console.log('✓ 读法 curl：standalone time 返回自然语言 spokenText；number 同样返回 spokenText');
     await browserTest(base, temp, service);
     for (const file of ['test_srs.js', 'test_spelling.js', 'test_practice.js', 'test_speech.js', 'test_ui.js', 'test_listening.js']) {
       console.log(`\n> node ${file}`);

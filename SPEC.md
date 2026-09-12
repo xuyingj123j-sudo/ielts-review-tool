@@ -733,3 +733,22 @@ SECTION_UNLOCK_STREAK = 3
 4. 现有 `test_listening.js` 照常全绿（证明后端功能完好，回归不受影响）。
 
 不部署、不碰PM2、不推GitHub、不改动线上服务器，本地验证完再由后续流程决定部署时机。
+
+## 数字听力：答案反馈补上"英语怎么读"（2026-09-12 用户反馈）
+
+用户反馈：`time`（时间）等类别的standalone测验，答错/答对后只显示规范答案（比如 `16:15`），但用户不知道这个时间英语该怎么说（比如 `a quarter past four`），因为练习的本意就是学会听懂+学会说这种表达。
+
+现状：服务端在生成题目时已经算出了自然语言读法（`generateQuestion` 返回的 `spokenText`，就是喂给TTS朗读的那段文本），且这份文本在 `answerNumberQuestion`（`src/services.js` 约397行）作答时依然能从 `question.spokenText` 拿到，只是没有放进返回给前端的响应里（目前只返回 `{isCorrect, correctAnswer, promptText}`）。
+
+**修复要求**：
+1. `answerNumberQuestion` 的返回值加一个字段 `spokenText: question.spokenText`。
+2. 前端 `public/numbers.js` 里渲染作答反馈的地方（约92行 `#number-feedback` 那段），在"正确答案：xxx"下面，当 `category` 是 `date`/`time`/`money` 这三类时，额外展示一行读法提示，比如"英语读作：<em>a quarter past four</em>"（文案自定，意思到位即可）；`category` 是 `number`/`phone` 时不展示这一行（这两类的"读法"就是数字本身，展示了是重复信息，没有意义）。
+3. 对话模式（`mode='dialogue'`）已经在 `promptText` 完整句子里包含了这段自然语言表达，可以照样加上这行独立展示（帮助用户从整句里单独抓出这个时间/日期/金额表达要怎么读），不用因为已经在promptText里出现过就跳过。
+
+**验收标准**：
+1. curl验证：对一个 `category=time` 的standalone题目提交答案，响应体里包含 `spokenText` 字段，且内容是自然语言读法（比如包含 `past`/`to`/`o'clock` 这类词，不是纯数字）。
+2. curl验证：对一个 `category=number` 的题目提交答案，`spokenText` 字段依然存在（数据不用特殊处理，返回就返回），但前端不应该为number类别渲染这行"读作"提示——这条在前端DOM/CDP断言里验证，不是接口层面过滤。
+3. CDP浏览器断言：进入"时间"专项练习，提交任意答案后，反馈区域里存在读法提示且文本内容等于该题的 `spokenText`；进入"一般数字"专项练习，提交答案后反馈区域里不存在这行读法提示。
+4. 现有 `test_number_drill.js`、`scripts/test_number_browser.js` 及其余全部既有测试回归通过。
+
+不部署、不碰PM2、不推GitHub、不改动线上服务器，本地验证完再由后续流程决定部署时机。
