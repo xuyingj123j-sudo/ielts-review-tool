@@ -57,6 +57,12 @@ function unitTests() {
   assert.equal(number.correctAnswer, '4829'); assert.equal(number.spokenText, '4829');
   grade('number', number.correctAnswer, ['4829', '4,829'], ['4830']);
   console.log('✓ 6 一般数字：固定生成4829；4829、4,829正确，4830错误');
+  grade('time', '03:50', ['０３：５０', '03： 50', '　０３：　５０　'], ['０３：５１', '０４：５０', '０３：６０', '２４：５０']);
+  grade('date', '2019-03-21', ['２１／０３／２０１９', '２０１９－０３－２１', '２１．０３．２０１９', '　２０１９　０３　２１　'], ['２２／０３／２０１９', '２０１９－０４－２１', '３１／０２／２０１９']);
+  grade('money', '£1234.56', ['１２３４．５６', '£１，２３４．５６', '　１，２３４．５６　'], ['１２３４．５７', '－１２３４．５６', '１２３４．５６．７']);
+  grade('number', '4829', ['４８２９', '４，８２９', '　４８２９　'], ['４８３０', '４８２', '４８２９０', '4829０']);
+  grade('phone', '07911234567', ['０７９１１２３４５６７', '　０７９１１　２３４５６７　'], ['０７９１１２３４５６８', '０７９１１２３４５６', '０７９１１２３４５６７０', '07911234567０']);
+  console.log('✓ 全角判分：五类别、全部指定全角标点/空格及混合输入通过；错数字、缺位/多位、非法日期/时间/金额仍判错');
   for (const value of Object.values(DIALOGUE_TEMPLATES)) {
     assert.ok(value.templates.length >= 2);
     for (const template of value.templates) { assert.ok(template.includes('{V}')); assert.ok(!template.replaceAll('{V}', 'sample').includes('{V}')); }
@@ -94,7 +100,8 @@ async function main() {
   try {
     const curl = async (route, body, expected = body ? 201 : 200) => {
       const args = ['-sS', '-w', '\n%{http_code}', `${base}/api/numbers/${route}`];
-      if (body) args.push('-H', 'content-type: application/json', '--data-binary', JSON.stringify(body));
+      // Unicode escapes preserve full-width input through Windows curl's argument encoding.
+      if (body) args.push('-H', 'content-type: application/json', '--data-binary', JSON.stringify(body).replace(/[^\x00-\x7F]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`));
       const { stdout } = await promisify(execFile)(process.platform === 'win32' ? 'curl.exe' : 'curl', args, { windowsHide: true });
       const lines = stdout.trim().split('\n'); const status = Number(lines.pop()); const data = JSON.parse(lines.join('\n'));
       assert.equal(status, expected, JSON.stringify(data));
@@ -133,6 +140,14 @@ async function main() {
     assert.equal(timeAnswer.spokenText, timeQuestion.spokenText);
     assert.match(timeAnswer.spokenText, /past|to|o'clock/);
     console.log('✓ 读法 curl：standalone time 返回自然语言 spokenText；number 同样返回 spokenText');
+    const widthQuestion = await curl('question', { mode: 'standalone', category: 'time' });
+    const widthExpected = service.pendingNumberQuestions.get(widthQuestion.questionId).correctAnswer;
+    const widthInput = widthExpected.replace(/[0-9:]/g, character => String.fromCharCode(character.charCodeAt(0) + 0xFEE0));
+    const widthAnswer = await curl('answer', { questionId: widthQuestion.questionId, userAnswer: widthInput });
+    assert.equal(widthAnswer.isCorrect, true);
+    assert.equal(widthAnswer.correctAnswer, widthExpected);
+    assert.equal(database.connection.prepare('SELECT user_answer FROM number_drill_attempts ORDER BY id DESC LIMIT 1').get().user_answer, widthInput);
+    console.log(`✓ 全角 curl：userAnswer=${widthInput}，isCorrect=true；数据库保留原始全角输入`);
     await browserTest(base, temp, service);
     for (const file of ['test_srs.js', 'test_spelling.js', 'test_practice.js', 'test_speech.js', 'test_ui.js', 'test_listening.js']) {
       console.log(`\n> node ${file}`);

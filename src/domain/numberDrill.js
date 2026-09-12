@@ -163,8 +163,15 @@ function validDate(year, month, day) {
   return value.getUTCFullYear() === year && value.getUTCMonth() === month - 1 && value.getUTCDate() === day;
 }
 
+function normalizeWidth(text) {
+  return text.replace(/[０-９：／－．，　]/g, (character) => (
+    character === '　' ? ' ' : String.fromCharCode(character.charCodeAt(0) - 0xFEE0)
+  ));
+}
+
 function gradeAnswer({ category, correctAnswer, userAnswer }) {
   if (!CATEGORIES.includes(category) || typeof correctAnswer !== 'string' || typeof userAnswer !== 'string') return false;
+  userAnswer = normalizeWidth(userAnswer);
   if (category === 'number' || category === 'phone') {
     return userAnswer.replace(/\D/g, '') === correctAnswer;
   }

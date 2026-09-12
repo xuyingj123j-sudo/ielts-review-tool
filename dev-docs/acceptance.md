@@ -1,5 +1,14 @@
 # 验收记录
 
+## 2026-09-12 数字听力全角输入修复（本地）
+
+仅实现 SPEC 中“判分要兼容中文输入法的全角字符”一节。`src/domain/numberDrill.js` 的 `gradeAnswer` 在所有类别解析前调用纯函数 `normalizeWidth`，仅转换指定数字、标点和全角空格，沿用既有类别判分规则。
+
+- 修复前实际复现：`03:50` 对 `０３：５０`、`03： 50` 均返回 false；新增单测覆盖这两例、五类别和全部指定字符，错数字、缺位/多位、非法日期/时间/金额仍返回 false。
+- 真实 curl：全角 `１３：３５` 提交 `/api/numbers/answer` 返回 HTTP 201，响应为 `{"isCorrect":true,"correctAnswer":"13:35","promptText":null,"spokenText":"twenty-five to two in the afternoon"}`；断言数据库保留原始全角输入。curl 测试使用 JSON Unicode 转义避免 Windows 参数编码损坏。
+- 自审 `git diff` 后执行 `npm.cmd test`，实际 `NPM_TEST_EXIT=0` 且进程自然退出；包含 test_number_drill.js、其内 test_srs.js/test_spelling.js/test_practice.js/test_speech.js/test_ui.js/test_listening.js，以及 test_access_token.js/test_feedback.js，三个既有 CDP 浏览器验收全部通过。
+- 测试服务器、浏览器、临时数据库/profile 均随脚本关闭和清理；真实库39张卡片及既有业务表逐行前后不变。未部署、未操作 PM2、未推送 GitHub、未连接线上服务器。
+
 ## 2026-09-10 三项用户实测反馈（本地）
 
 最终代码自审后执行 `npm.cmd test`，实际输出 `NPM_TEST_EXIT=0`，命令自然返回。包含 `test_number_drill.js`、其内六套旧回归（SRS、拼写、自由练习、朗读、UI、听力）、`test_access_token.js`、新增 `test_feedback.js`；数字、口令与反馈三个 CDP 浏览器脚本均实际执行。旧测试未修改。
