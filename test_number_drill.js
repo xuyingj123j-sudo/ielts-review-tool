@@ -90,6 +90,22 @@ async function main() {
   const before = realSnapshot();
   unitTests();
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ielts-number-test-'));
+  const legacyPath = path.join(temp, 'legacy-number.db');
+  const legacy = new Database(legacyPath);
+  legacy.exec(`CREATE TABLE number_drill_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL, category TEXT NOT NULL, subtype TEXT, prompt_text TEXT,
+    spoken_text TEXT NOT NULL, correct_answer TEXT NOT NULL, user_answer TEXT NOT NULL,
+    is_correct INTEGER NOT NULL, exam_session_id TEXT, attempted_at TEXT NOT NULL
+  );
+  INSERT INTO number_drill_attempts VALUES (41, 'standalone', 'number', NULL, NULL, '41', '42', 'wrong', 0, NULL, '2026-09-09 12:00:00');`);
+  legacy.close();
+  const migrated = new ReviewDatabase(legacyPath);
+  const resolvedColumn = migrated.connection.pragma('table_info(number_drill_attempts)').find(column => column.name === 'resolved');
+  assert.ok(resolvedColumn?.notnull); assert.equal(resolvedColumn.dflt_value, '0');
+  assert.equal(migrated.connection.prepare('SELECT resolved FROM number_drill_attempts WHERE id = 41').get().resolved, 0);
+  migrated.close();
+  console.log('✓ resolved 迁移：旧错题 id=41 保留，普通 ADD COLUMN 后 resolved=0');
   const database = new ReviewDatabase(path.join(temp, 'test.db'));
   let clock = now;
   const service = new ReviewService(database, () => clock);
@@ -102,7 +118,9 @@ async function main() {
       const args = ['-sS', '-w', '\n%{http_code}', `${base}/api/numbers/${route}`];
       // Unicode escapes preserve full-width input through Windows curl's argument encoding.
       if (body) args.push('-H', 'content-type: application/json', '--data-binary', JSON.stringify(body).replace(/[^\x00-\x7F]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`));
-      const { stdout } = await promisify(execFile)(process.platform === 'win32' ? 'curl.exe' : 'curl', args, { windowsHide: true });
+      const executable = process.platform === 'win32' ? 'curl.exe' : 'curl';
+      console.log(`COMMAND: ${executable} ${args.map(argument => JSON.stringify(argument)).join(' ')}`);
+      const { stdout } = await promisify(execFile)(executable, args, { windowsHide: true });
       const lines = stdout.trim().split('\n'); const status = Number(lines.pop()); const data = JSON.parse(lines.join('\n'));
       assert.equal(status, expected, JSON.stringify(data));
       console.log(`curl ${body ? 'POST' : 'GET'} /api/numbers/${route} → ${status} ${JSON.stringify(data)}`);
@@ -115,11 +133,38 @@ async function main() {
     assert.equal(answer.isCorrect, false); assert.ok(answer.correctAnswer); assert.equal(answer.promptText, q.spokenText);
     await curl('answer', { questionId: q.questionId, userAnswer: 'wrong' }, 400);
     const mistakes = await curl('mistakes'); assert.equal(mistakes[0].prompt_text, q.spokenText);
-    const q2 = await curl('question', { mode: 'standalone', category: 'number' });
-    const numberAnswer = await curl('answer', { questionId: q2.questionId, userAnswer: ` ${q2.spokenText} ` });
-    assert.equal(numberAnswer.spokenText, q2.spokenText);
-    assert.equal(database.connection.prepare('SELECT user_answer FROM number_drill_attempts ORDER BY id DESC LIMIT 1').get().user_answer, ` ${q2.spokenText} `);
+    const resolvingId = mistakes[0].id;
+    const q2 = await curl('question', { mode: 'dialogue', subtype: mistakes[0].subtype });
+    const q2Correct = service.pendingNumberQuestions.get(q2.questionId).correctAnswer;
+    const numberAnswer = await curl('answer', { questionId: q2.questionId, userAnswer: ` ${q2Correct} `, resolvingMistakeId: resolvingId });
+    assert.equal(numberAnswer.isCorrect, true); assert.equal(numberAnswer.spokenText, q2.spokenText);
+    assert.equal(database.connection.prepare('SELECT user_answer FROM number_drill_attempts ORDER BY id DESC LIMIT 1').get().user_answer, ` ${q2Correct} `);
+    const afterResolved = await curl('mistakes'); assert.ok(!afterResolved.some(row => row.id === resolvingId));
+    assert.equal(database.connection.prepare('SELECT resolved FROM number_drill_attempts WHERE id = ?').get(resolvingId).resolved, 1);
+    console.log(`✓ 错题答对移出：原错题 id=${resolvingId}，同类型新题 isCorrect=true，GET mistakes 已无该 id`);
     const stats = await curl('stats'); assert.equal(stats.total, 2); assert.equal(stats.accuracy, 50);
+
+    const wrongOriginQuestion = await curl('question', { mode: 'dialogue', subtype: 'deadline' });
+    await curl('answer', { questionId: wrongOriginQuestion.questionId, userAnswer: 'wrong-origin' });
+    const wrongOrigin = (await curl('mistakes')).find(row => row.spoken_text === wrongOriginQuestion.spokenText && row.user_answer === 'wrong-origin');
+    assert.ok(wrongOrigin);
+    const wrongReviewQuestion = await curl('question', { mode: 'dialogue', subtype: 'deadline' });
+    await curl('answer', { questionId: wrongReviewQuestion.questionId, userAnswer: 'wrong-again', resolvingMistakeId: wrongOrigin.id });
+    const afterWrongReview = await curl('mistakes');
+    const newWrong = afterWrongReview.find(row => row.spoken_text === wrongReviewQuestion.spokenText && row.user_answer === 'wrong-again');
+    assert.ok(afterWrongReview.some(row => row.id === wrongOrigin.id)); assert.ok(newWrong); assert.notEqual(newWrong.id, wrongOrigin.id);
+    assert.equal(database.connection.prepare('SELECT resolved FROM number_drill_attempts WHERE id = ?').get(wrongOrigin.id).resolved, 0);
+    console.log(`✓ 错题再错保留两条：原错题 id=${wrongOrigin.id}、新错题 id=${newWrong.id} 均在 GET mistakes`);
+
+    const missingResolverId = 999999999;
+    const missingResolverQuestion = await curl('question', { mode: 'standalone', category: 'number' });
+    const missingResolverAnswer = service.pendingNumberQuestions.get(missingResolverQuestion.questionId).correctAnswer;
+    const unresolvedBeforeMissing = database.connection.prepare('SELECT COUNT(*) n FROM number_drill_attempts WHERE is_correct = 0 AND resolved = 0').get().n;
+    const missingResult = await curl('answer', { questionId: missingResolverQuestion.questionId, userAnswer: missingResolverAnswer, resolvingMistakeId: missingResolverId });
+    assert.equal(missingResult.isCorrect, true);
+    assert.equal(database.connection.prepare('SELECT COUNT(*) n FROM number_drill_attempts WHERE is_correct = 0 AND resolved = 0').get().n, unresolvedBeforeMissing);
+    console.log(`✓ 不存在的 resolvingMistakeId=${missingResolverId} 被静默忽略，正常答题响应 isCorrect=true`);
+
     const exam = await curl('exam/start', { questionCount: 3, categories: CATEGORIES });
     for (let index = 0; index < 3; index++) {
       const question = await curl('question', { mode: 'exam', category: CATEGORIES[index] });

@@ -60,6 +60,12 @@ class ReviewDatabase {
     if (!cardColumns.some((column) => column.name === 'review_mode')) {
       this.connection.exec("ALTER TABLE cards ADD COLUMN review_mode TEXT NOT NULL DEFAULT 'flip'");
     }
+    if (!cardColumns.some((column) => column.name === 'source')) {
+      this.connection.exec("ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+    }
+    if (!cardColumns.some((column) => column.name === 'spelling_category')) {
+      this.connection.exec('ALTER TABLE cards ADD COLUMN spelling_category TEXT');
+    }
 
     this.connection.exec(`
       CREATE TABLE IF NOT EXISTS review_logs (
@@ -123,6 +129,18 @@ class ReviewDatabase {
         user_answer TEXT NOT NULL,
         is_correct INTEGER NOT NULL CHECK (is_correct IN (0, 1)),
         exam_session_id TEXT,
+        attempted_at TEXT NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0, 1))
+      );
+      CREATE TABLE IF NOT EXISTS prediction_drill_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sentence_template TEXT NOT NULL,
+        correct_type TEXT NOT NULL CHECK (correct_type IN ('NUMBER','NOUN','VERB','ADJECTIVE','DATE','TIME','PLACE','NAME','OTHER')),
+        predicted_type TEXT NOT NULL CHECK (predicted_type IN ('NUMBER','NOUN','VERB','ADJECTIVE','DATE','TIME','PLACE','NAME','OTHER')),
+        prediction_correct INTEGER NOT NULL CHECK (prediction_correct IN (0, 1)),
+        correct_answer TEXT NOT NULL,
+        user_answer TEXT NOT NULL,
+        answer_correct INTEGER NOT NULL CHECK (answer_correct IN (0, 1)),
         attempted_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(next_review_date);
@@ -134,8 +152,28 @@ class ReviewDatabase {
       CREATE INDEX IF NOT EXISTS idx_listening_attempts_stage_recent ON listening_attempts(section_id, attempt_date DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_number_drill_attempts_recent ON number_drill_attempts(attempted_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_number_drill_exam_session ON number_drill_attempts(exam_session_id, id);
+      CREATE INDEX IF NOT EXISTS idx_prediction_drill_attempts_recent ON prediction_drill_attempts(attempted_at DESC, id DESC);
     `);
 
+    for (const table of ['review_logs', 'number_drill_attempts']) {
+      if (!this.connection.pragma(`table_info(${table})`).some(column => column.name === 'error_type')) {
+        this.connection.exec(`ALTER TABLE ${table} ADD COLUMN error_type TEXT`);
+      }
+    }
+    if (!this.connection.pragma('table_info(number_drill_attempts)').some(column => column.name === 'resolved')) {
+      this.connection.exec('ALTER TABLE number_drill_attempts ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1))');
+    }
+    this.connection.exec(`CREATE TABLE IF NOT EXISTS listening_answer_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attempt_id INTEGER NOT NULL REFERENCES listening_attempts(id) ON DELETE CASCADE,
+      question_number INTEGER NOT NULL,
+      user_answer TEXT NOT NULL,
+      correct_answer TEXT NOT NULL,
+      is_correct INTEGER NOT NULL CHECK (is_correct IN (0,1)),
+      error_type TEXT,
+      collected_card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL,
+      UNIQUE(attempt_id, question_number)
+    )`);
     const writingColumns = this.connection.pragma('table_info(writing_completions)');
     if (!writingColumns.some((column) => column.name === 'content')) {
       this.connection.exec("ALTER TABLE writing_completions ADD COLUMN content TEXT NOT NULL DEFAULT ''");
@@ -272,17 +310,17 @@ class ReviewDatabase {
 
   createCard(card) {
     const result = this.connection.prepare(`
-      INSERT INTO cards (skill, type, front, front_audio, back, review_mode, note, box, next_review_date, created_at)
-      VALUES (@skill, @type, @front, @frontAudio, @back, @reviewMode, @note, 1, @nextReviewDate, @createdAt)
-    `).run({ ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip' });
+      INSERT INTO cards (skill, type, front, front_audio, back, review_mode, note, box, next_review_date, created_at, source, spelling_category)
+      VALUES (@skill, @type, @front, @frontAudio, @back, @reviewMode, @note, 1, @nextReviewDate, @createdAt, @source, @spellingCategory)
+    `).run({ ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip', source: card.source ?? 'manual', spellingCategory: card.spellingCategory ?? null });
     return this.getCard(result.lastInsertRowid);
   }
 
   updateCard(id, card) {
     this.connection.prepare(`
-      UPDATE cards SET skill=@skill, type=@type, front=@front, front_audio=@frontAudio, back=@back, review_mode=@reviewMode, note=@note
+      UPDATE cards SET skill=@skill, type=@type, front=@front, front_audio=@frontAudio, back=@back, review_mode=@reviewMode, note=@note, source=@source, spelling_category=@spellingCategory
       WHERE id=@id
-    `).run({ id, ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip' });
+    `).run({ id, ...card, frontAudio: card.frontAudio ?? null, reviewMode: card.reviewMode ?? 'flip', source: card.source ?? 'manual', spellingCategory: card.spellingCategory ?? null });
     return this.getCard(id);
   }
 
@@ -317,11 +355,11 @@ class ReviewDatabase {
         WHERE id=? AND box=?
       `).run(boxAfter, nextReviewDate, reviewedAt, id, boxBefore);
       if (updated.changes !== 1) throw new Error('卡片状态已变化，请刷新后重试');
-      this.connection.prepare(`
+      const log = this.connection.prepare(`
         INSERT INTO review_logs (card_id, reviewed_at, result, box_before, box_after)
         VALUES (?, ?, ?, ?, ?)
       `).run(id, reviewedAt, result, boxBefore, boxAfter);
-      return this.getCard(id);
+      return { ...this.getCard(id), review_log_id: Number(log.lastInsertRowid) };
     })();
   }
 
@@ -486,37 +524,99 @@ class ReviewDatabase {
   }
 
   createListeningAttempt(attempt) {
-    const result = this.connection.prepare(`
-      INSERT INTO listening_attempts (
-        section_id, attempt_date, score_correct, score_total, check_gist,
-        check_key_sentences, check_paraphrase, check_redo_improved,
-        check_retention, notes
-      ) VALUES (
-        @sectionId, @attemptDate, @scoreCorrect, @scoreTotal, @checkGist,
-        @checkKeySentences, @checkParaphrase, @checkRedoImproved,
-        @checkRetention, @notes
-      )
-    `).run(attempt);
-    return this.connection.prepare('SELECT * FROM listening_attempts WHERE id = ?').get(result.lastInsertRowid);
+    return this.connection.transaction(() => {
+      const result = this.connection.prepare(`
+        INSERT INTO listening_attempts (
+          section_id, attempt_date, score_correct, score_total, check_gist,
+          check_key_sentences, check_paraphrase, check_redo_improved,
+          check_retention, notes
+        ) VALUES (
+          @sectionId, @attemptDate, @scoreCorrect, @scoreTotal, @checkGist,
+          @checkKeySentences, @checkParaphrase, @checkRedoImproved,
+          @checkRetention, @notes
+        )
+      `).run(attempt);
+      const insert = this.connection.prepare(`INSERT INTO listening_answer_items
+        (attempt_id, question_number, user_answer, correct_answer, is_correct) VALUES (?, ?, ?, ?, ?)`);
+      for (const item of attempt.grading || []) {
+        insert.run(result.lastInsertRowid, item.number, item.user_answer, item.correct_answer, Number(item.correct));
+      }
+      return this.connection.prepare('SELECT * FROM listening_attempts WHERE id = ?').get(result.lastInsertRowid);
+    })();
   }
 
-  createNumberDrillAttempt(attempt) {
-    const result = this.connection.prepare(`
-      INSERT INTO number_drill_attempts (
-        mode, category, subtype, prompt_text, spoken_text, correct_answer,
-        user_answer, is_correct, exam_session_id, attempted_at
-      ) VALUES (
-        @mode, @category, @subtype, @promptText, @spokenText, @correctAnswer,
-        @userAnswer, @isCorrect, @examSessionId, @attemptedAt
-      )
-    `).run(attempt);
-    return this.connection.prepare('SELECT * FROM number_drill_attempts WHERE id = ?').get(result.lastInsertRowid);
+  spellingCards(category, mistakes) {
+    return this.connection.prepare(`SELECT cards.* FROM cards
+      WHERE review_mode = 'spelling'
+      ${category ? 'AND spelling_category = @category' : ''}
+      ${mistakes ? `AND (box = 1 OR (SELECT result FROM review_logs WHERE card_id = cards.id
+        ORDER BY reviewed_at DESC, id DESC LIMIT 1) = 'incorrect')` : ''}
+      ORDER BY RANDOM()`).all(category ? { category } : {});
+  }
+
+  paraphraseCards(mistakes) {
+    return this.connection.prepare(`SELECT cards.* FROM cards
+      WHERE type = '同义替换'
+      ${mistakes ? `AND (box = 1 OR (SELECT result FROM review_logs WHERE card_id = cards.id
+        ORDER BY reviewed_at DESC, id DESC LIMIT 1) = 'incorrect')` : ''}
+      ORDER BY RANDOM()`).all();
+  }
+
+  reviewLog(id) { return this.connection.prepare('SELECT * FROM review_logs WHERE id = ?').get(id); }
+
+  setReviewError(id, errorType) {
+    this.connection.prepare('UPDATE review_logs SET error_type = ? WHERE id = ?').run(errorType, id);
+    return this.reviewLog(id);
+  }
+
+  listeningAttempt(id) { return this.connection.prepare('SELECT * FROM listening_attempts WHERE id = ?').get(id); }
+
+  listeningItems(attemptId) {
+    return this.connection.prepare('SELECT * FROM listening_answer_items WHERE attempt_id = ? ORDER BY question_number').all(attemptId);
+  }
+
+  listeningItem(attemptId, number) {
+    return this.connection.prepare('SELECT * FROM listening_answer_items WHERE attempt_id = ? AND question_number = ?').get(attemptId, number);
+  }
+
+  setListeningError(attemptId, number, errorType) {
+    this.connection.prepare('UPDATE listening_answer_items SET error_type = ? WHERE attempt_id = ? AND question_number = ?').run(errorType, attemptId, number);
+    return this.listeningItem(attemptId, number);
+  }
+
+  collectListeningCard(attemptId, number, createCard) {
+    return this.connection.transaction(() => {
+      const card = createCard();
+      this.connection.prepare('UPDATE listening_answer_items SET collected_card_id = ? WHERE attempt_id = ? AND question_number = ?').run(card.id, attemptId, number);
+      return card;
+    })();
+  }
+
+  createNumberDrillAttempt(attempt, resolvingMistakeId = null) {
+    return this.connection.transaction(() => {
+      const result = this.connection.prepare(`
+        INSERT INTO number_drill_attempts (
+          mode, category, subtype, prompt_text, spoken_text, correct_answer,
+          user_answer, is_correct, exam_session_id, attempted_at
+        ) VALUES (
+          @mode, @category, @subtype, @promptText, @spokenText, @correctAnswer,
+          @userAnswer, @isCorrect, @examSessionId, @attemptedAt
+        )
+      `).run(attempt);
+      if (attempt.isCorrect && resolvingMistakeId !== null) {
+        this.connection.prepare(`
+          UPDATE number_drill_attempts SET resolved = 1
+          WHERE id = ? AND is_correct = 0 AND resolved = 0
+        `).run(resolvingMistakeId);
+      }
+      return this.connection.prepare('SELECT * FROM number_drill_attempts WHERE id = ?').get(result.lastInsertRowid);
+    })();
   }
 
   numberDrillMistakes(limit) {
     return this.connection.prepare(`
       SELECT * FROM number_drill_attempts
-      WHERE is_correct = 0
+      WHERE is_correct = 0 AND resolved = 0
       ORDER BY attempted_at DESC, id DESC
       LIMIT ?
     `).all(limit);
@@ -531,6 +631,37 @@ class ReviewDatabase {
       GROUP BY category
       ORDER BY category
     `).all(...(examSessionId === null ? [] : [examSessionId]));
+  }
+
+  createPredictionDrillAttempt(attempt) {
+    const result = this.connection.prepare(`
+      INSERT INTO prediction_drill_attempts (
+        sentence_template, correct_type, predicted_type, prediction_correct,
+        correct_answer, user_answer, answer_correct, attempted_at
+      ) VALUES (
+        @sentenceTemplate, @correctType, @predictedType, @predictionCorrect,
+        @correctAnswer, @userAnswer, @answerCorrect, @attemptedAt
+      )
+    `).run(attempt);
+    return this.connection.prepare('SELECT * FROM prediction_drill_attempts WHERE id = ?').get(result.lastInsertRowid);
+  }
+
+  predictionDrillStats() {
+    return this.connection.prepare(`
+      SELECT COUNT(*) AS total,
+        COALESCE(SUM(prediction_correct), 0) AS prediction_correct,
+        COALESCE(SUM(answer_correct), 0) AS answer_correct
+      FROM prediction_drill_attempts
+    `).get();
+  }
+
+  predictionDrillMistakes(limit) {
+    return this.connection.prepare(`
+      SELECT * FROM prediction_drill_attempts
+      WHERE prediction_correct = 0 OR answer_correct = 0
+      ORDER BY attempted_at DESC, id DESC
+      LIMIT ?
+    `).all(limit);
   }
 
   close() {

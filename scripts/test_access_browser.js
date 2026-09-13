@@ -84,12 +84,12 @@ async function accessBrowserTest(base, temp) {
     assert.equal(await evaluate('localStorage.getItem("ielts_access_token")'), null);
     console.log('CDP 错误口令：重试401后清除localStorage并重新提示');
     await typeKeys('test-secret-123'); await mouseClick('#access-token-dialog button');
-    await waitFor('!!document.querySelector("[data-go=numbers]") && !document.querySelector("#access-token-dialog")');
+    await waitFor('!!document.querySelector("[data-go=foundations]") && !document.querySelector("#access-token-dialog")');
     assert.equal(await evaluate('localStorage.getItem("ielts_access_token")'), 'test-secret-123');
     console.log('CDP 正确口令：真实键盘/鼠标输入，localStorage保存，失败GET自动重试且首页渲染');
     requests.length = 0;
     await cdp('Page.reload', { ignoreCache: true });
-    await waitFor('!!document.querySelector("[data-go=numbers]")');
+    await waitFor('!!document.querySelector("[data-go=foundations]")');
     assert.equal(await evaluate('!!document.querySelector("#access-token-dialog")'), false);
     assert.ok(requests.length > 0);
     const requestToken = request => Object.entries(request.headers).find(([key]) => key.toLowerCase() === 'x-access-token')?.[1];
@@ -97,7 +97,7 @@ async function accessBrowserTest(base, temp) {
     console.log(`CDP 刷新记忆：${requests.length}个API请求均携带正确X-Access-Token，不再弹框`);
     // Exercise a real UI POST with stale credentials; ensure its original JSON survives retry.
     await evaluate('localStorage.setItem("ielts_access_token", "expired-secret")');
-    await mouseClick('[data-go=numbers]'); await mouseClick('#number-start');
+    await mouseClick('[data-go=foundations]'); await mouseClick('[data-foundation=numbers]'); await mouseClick('#number-start');
     await waitFor('!!document.querySelector("#access-token-dialog[open]")');
     assert.equal(await evaluate('localStorage.getItem("ielts_access_token")'), null);
     await typeKeys('test-secret-123'); await mouseClick('#access-token-dialog button');

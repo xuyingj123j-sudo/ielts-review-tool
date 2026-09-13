@@ -778,3 +778,373 @@ SECTION_UNLOCK_STREAK = 3
 4. 现有 `test_number_drill.js`、`scripts/test_number_browser.js` 及其余全部既有测试回归通过。
 
 不部署、不碰PM2、不推GitHub、不改动线上服务器，本地验证完再由后续流程决定部署时机。
+
+## 听力基础能力专项训练系统 · 第一轮：地基（2026-09-12，用户提出扩展需求）
+
+### 背景与整体规划
+
+用户希望把"数字听力"从单一专项扩展成一整套"听力基础能力训练系统"：测试 → 判断错误类型 → 单项训练 → 自动进错题库 → 间隔复习 → 再测试 → 按薄弱项动态调整。第一阶段规划5个新专项：拼写、连读/弱读识别、同义替换、答案预测、错因分类与数据统计。**已有的数字听力专项必须原样保留，不改动其题目生成/判分/API逻辑。**
+
+整套系统体量较大，拆成**三轮**交付，每轮独立走"写SPEC → Codex执行 → 独立验证 → 用户确认 → 再进下一轮"，不要一次性把所有专项糊在一起：
+
+- **第一轮（本节）**：错因分类的数据地基（`error_type`）、听力真题批改的逐题明细持久化 + "标记错因/一键收录成卡片"的内容沉淀机制、`cards`表加`source`字段、拼写专项的独立入口页（复用已经上线的`review_mode='spelling'`能力）、专项训练首页导航壳。**本轮不改动`cards.type`枚举**（原因见下方"⚠️遗留风险"一节）。
+- **第二轮（不在本次范围内）**：连读/弱读专项练习页、同义替换专项练习页。
+- **第三轮（不在本次范围内）**：答案预测专项（唯一需要新建攻击面的模块）、听力能力分析Dashboard、今日训练推荐算法。
+
+**关键原则（贯穿三轮，务必遵守）：**
+1. **禁止为了新功能重构现有模块**。数字听力、卡片SRS、听力真题、每日任务等现有功能的路由、表结构、判分逻辑，除本节明确要求的加列/加值之外，不允许有任何改动。
+2. **禁止批量AI灌库**。同义替换、连读弱读、答案预测这几个专项需要的真实语料（例句、目标句块、题干↔原文对应关系），内容来源是用户自己的真实错题——本节要建的"标记错因+一键收录"机制就是为了让这些专项在后续轮次里有真实数据可用，不是靠AI临时编一批塞进数据库。
+3. **不下线现有复习状态机**。全项目统一用`cards.box`（1-5）当作唯一的"掌握程度"指标，不要为新专项另外发明一套"NEW/LEARNING/REVIEWING/MASTERED"这种平行状态——箱位越高就代表越熟练，跟现有五箱法完全兼容，翻译关系是：box=1约等于"刚学"，box2-3约等于"学习中"，box4约等于"复习中"，box=5约等于"已掌握"，这只是概念对照，**不需要新增字段去存这个映射**，UI层面想展示中文说法时按box数字直接映射文案即可。
+
+### 错因分类：统一枚举
+
+新建 `src/domain/errorTypes.js`，作为整个项目里"错因"这个概念的唯一定义来源（后面所有模块都从这里 `require`，不允许各自重复定义一份类似的列表）：
+
+```js
+const ERROR_TYPES = Object.freeze([
+  'UNKNOWN_WORD',            // 生词，根本不认识
+  'SOUND_RECOGNITION',       // 认识这个词，但语流里听不出来
+  'SPELLING',                // 听到了，但拼写错误
+  'SENTENCE_COMPREHENSION',  // 原文摆在眼前也看不懂意思
+  'PARAPHRASE',              // 没识别出题目和原文的同义替换关系
+  'DISTRACTOR',              // 被干扰信息误导
+  'PREDICTION',              // 没有正确预测答案类型
+  'LOST_POSITION',           // 听力过程中跟丢了位置
+  'OTHER'
+]);
+const ERROR_TYPE_LABELS = Object.freeze({
+  UNKNOWN_WORD: '生词/词汇量',
+  SOUND_RECOGNITION: '听音辨识',
+  SPELLING: '拼写',
+  SENTENCE_COMPREHENSION: '原文理解',
+  PARAPHRASE: '同义替换',
+  DISTRACTOR: '干扰信息',
+  PREDICTION: '答案预测',
+  LOST_POSITION: '跟丢位置',
+  OTHER: '其他'
+});
+module.exports = { ERROR_TYPES, ERROR_TYPE_LABELS };
+```
+
+错因**只能由用户手动选择或修改，系统不强行自动判定**。允许留空（不强制每道错题都必须打标签，打扰用户是比数据不全更糟的事）。
+
+### 数据模型改动
+
+**1. `review_logs` 表加一列**：
+```sql
+ALTER TABLE review_logs ADD COLUMN error_type TEXT
+```
+可空，不加CHECK约束（枚举校验放在service层，跟现有`review_mode`列的做法一致）。这一列覆盖所有**已经存在**、且未来第二轮会新增的"走SRS五箱复习"的专项（拼写卡、连读弱读卡、同义替换卡），因为它们全部经由同一个`applyReview()`写`review_logs`，加这一列就是一次性覆盖未来两轮的地基，不用到时候再改。
+
+**2. `number_drill_attempts` 表加一列**：
+```sql
+ALTER TABLE number_drill_attempts ADD COLUMN error_type TEXT
+```
+同样可空、不加CHECK。
+
+**3. `cards` 表只加一列，不碰type枚举**：
+   - 加列：`ALTER TABLE cards ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`（枚举值：`real_error`/`manual`/`ielts_material`/`ai_generated`，校验放service层）。这是普通的`ALTER TABLE ADD COLUMN`，跟`type`列的CHECK约束无关，**不会触发下面这条迁移路径**，本轮对线上数据零风险。
+   - 本轮**不**给`TYPES`常量（`src/db.js`）追加"连读弱读"或任何新值。听力真题错题收录成卡片时（见下一节），`type`统一用现有枚举里已经有的`'听力误听'`或`'同义替换'`即可，够用。
+
+   **⚠️ 遗留风险，留给第二轮开工前必须先处理，本轮不用动但必须知情**：`cards`表的`type`列有CHECK约束锁死枚举值，SQLite不支持直接改CHECK约束，现有`migrateCardsTypeConstraint()`的做法是新建`cards_new`表→搬数据→删旧表→改名，触发条件是`!cardsTable.sql.includes("'生词'")`。但这个函数里搬数据用的`INSERT INTO cards_new (...) SELECT (...) FROM cards`是一份**硬编码列名清单**（`id, skill, type, front, back, note, box, next_review_date, created_at, last_reviewed_at, review_count`），**没有包含`front_audio`、`review_mode`这两个后来才加的列**，本轮再加上的`source`列也不在里面。线上生产库现在已经有真实的`front_audio`/`review_mode`数据。这个函数目前不会被触发（生产库的CHECK已经含`'生词'`，条件不满足），所以这颗雷目前是安全的、没有暴露。**但第二轮如果要真正做连读弱读专项、需要往`type`枚举里加新值时，必须先把这段迁移逻辑改成动态读取`pragma('table_info(cards)')`实际列名再搬数据，而不是继续用这份写死的清单**——不然到时候会静默清空线上`front_audio`/`review_mode`/`source`的真实数据。第二轮的SPEC要把这个修复列为前置任务。
+
+### 听力真题错题的逐题明细持久化 + 标记错因 + 一键收录成卡片
+
+**现状问题**：`recordListeningAttempt`（`src/services.js`）内部调用`gradeListeningAnswers`算出了逐题明细（`grading`数组，每项含`number/user_answer/correct/correct_answer/accepted_answers`），这份明细当次响应里会返回给前端，但**只有汇总的`score_correct`/`score_total`被写进`listening_attempts`表，逐题明细算完就丢了**，无法在批改完成、离开页面之后再回来处理错题。这是"从真实错题反推专项训练内容"这件事目前做不到的根本原因，本节要把这个地基补上。
+
+**新建表 `listening_answer_items`**：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | int PK | |
+| attempt_id | int, FK → listening_attempts(id) ON DELETE CASCADE | |
+| question_number | int | |
+| user_answer | text | |
+| correct_answer | text | |
+| is_correct | int, CHECK IN (0,1) | |
+| error_type | text, 可空 | 复用同一份`ERROR_TYPES`枚举，service层校验 |
+| collected_card_id | int, 可空, FK → cards(id) | 已经一键收录成卡片后，记录对应卡片id，防止重复收录 |
+
+`createListeningAttempt`（`src/db.js`）改成一个事务：写`listening_attempts`汇总行的同时，把传入的`grading`数组逐条写进`listening_answer_items`，`attempt_id`用刚插入的`listening_attempts.id`。
+
+**新增/修改API：**
+- `POST /api/listening/sections/:id/attempts` 现有接口不改变入参和现有返回字段，只是内部实现顺带把逐题明细落盘。
+- 新增 `GET /api/listening/attempts/:attemptId/items` — 返回该次批改的逐题明细（含`error_type`/`collected_card_id`当前值），支持用户离开当次批改结果页之后再回来处理错题，不强制当场处理完。
+- 新增 `PUT /api/listening/attempts/:attemptId/items/:questionNumber/error-type` `{error_type}` — 只允许标记`is_correct=0`的题（标记对的题返回400），`error_type`必须是`ERROR_TYPES`枚举值之一或`null`（传null等于清空标记）。
+- 新增 `POST /api/listening/attempts/:attemptId/items/:questionNumber/collect` `{skill, type, front, back, note}` — 一键把这道错题收录成卡片：
+  - 只允许收录`is_correct=0`且`collected_card_id`当前为空的题（已收录过的重复调用返回400，防止无限重复建卡）。
+  - 服务端强制`source='real_error'`，其余字段（`skill`/`type`/`front`/`back`/`note`）由前端传入（复用`normalizeCard`现有校验逻辑），默认值由前端预填：`front`=正确答案所在的原文上下文片段、`back`=正确答案本身、`note`=用户当时的错误答案、`type`默认`'听力误听'`（用户在收录前可以在前端表单里改成`'同义替换'`等其他现有类型）。
+  - 创建成功后：写入`cards`表，把该题`listening_answer_items.collected_card_id`更新为新卡片id，返回新建的卡片。
+
+**前端**：听力真题批改结果页（现有展示逐题对错的地方）每道**错题**旁边加：一个错因下拉选择（选项为`ERROR_TYPE_LABELS`的中文标签+"不标记"，选中即时PUT）、一个"收录到卡片库"按钮（点击弹出一个简单表单，预填上面提到的默认值，可编辑，确认后POST，成功后按钮变成"已收录"并禁用）。样式复用现有听力批改结果页的卡片风格。
+
+### 拼写专项独立入口页
+
+现有能力（不用改）：`review_mode='spelling'`卡片 + `reviewSpelling`/`gradePracticeSpelling`/`safeReviewCard`已经实现了"播放音频→输入→判分→自动进五箱"的完整闭环，本节**只做前端入口整合**，不改动这套后端逻辑。
+
+**唯一需要的小改动**：`cards`表加一列`spelling_category`（`ALTER TABLE cards ADD COLUMN spelling_category TEXT`，可空，跟`source`一样不加CHECK），枚举值（service层校验，仅当`review_mode='spelling'`时允许设置）：`letter`(字母)/`name_place`(人名地名)/`calendar`(星期月份日期)/`high_freq_answer`(高频答案词)/`scene_word`(高频场景词)。**不设第6类"我的错词"的存储分类**——"我的错词"是一个**计算出来的筛选条件**，不是存进去的标签：定义为"`review_mode='spelling'`且（`box=1` 或 最近一条`review_logs`是`incorrect`）的卡片"，用一条查询实现，不新建字段。
+
+新增页面 `public/spelling.js`（跟`public/numbers.js`同级的独立模块）：
+1. 首页：A-E五个分类入口（字母/人名地名/星期月份日期/高频答案词/高频场景词）+ 一个"我的错词"入口（上面定义的计算筛选）。
+2. 点进某一类：从该分类下`review_mode='spelling'`的卡片里随机抽一张进入练习（复用现有`/api/practice/cards/:id/spelling`只读判分接口，不新增判分逻辑），交互沿用现有拼写卡的"播放→输入→提交→显示正确答案"流程。**这条只读练习流程不写`review_logs`、不产生`review_log_id`，因此不提供错因标记入口**——跟"自由练习/单卡练习不计入进度"是同一个既定原则（详见前面"反馈1"一节），刻意保持一致，不为了让专项练习也能打错因标签就破坏这个原则去把自测写成正式复习记录。答错时改为提供一个"进入今日复习"的跳转入口，引导用户如果想让这次复习真正计入SRS进度、并且能打错因标签，就走正式复习队列（该队列内的拼写卡答错已经有错因标记入口，见下一节）。
+
+新建卡片录入表单（现有的"新建卡片"页面）在`review_mode='spelling'`时，额外显示`spelling_category`下拉，供用户手动补充分类；不填也允许保存（分类可以后续再补）。
+
+### 错因标记的通用API（覆盖SRS五箱复习）
+
+- 新增 `PUT /api/review/logs/:id/error-type` `{error_type}` — 只允许标记`result='incorrect'`的`review_logs`行，`error_type`同上枚举校验。
+- `review()`、`reviewSpelling()`（`src/services.js`）的返回值里加一个字段`review_log_id`（需要`applyReview`把新插入的`review_logs.id`一并返回，`src/db.js`的`applyReview`方法改一下返回结构，不改变现有调用方已经在用的字段），前端才能在提交答案后立刻拿到这次复习记录的id去打错因标签。
+- **错因标记UI只在`skill='听力'`的卡片复习结果里显示**（拼写卡、以及第二轮的连读弱读/同义替换卡都是`skill='听力'`）。`阅读`/`口语`/`写作`技能的普通翻卡复习**不显示**这个标记入口——错因分类是"听力基础能力"这个子系统的概念，不要污染到跟本次需求无关的其他技能页面。
+
+### 专项训练首页导航壳
+
+新增页面 `public/foundations.js`（跟`numbers.js`同级），作为"IELTS Listening Foundations"专项训练总入口：
+- 顶部标题"听力基础训练"。
+- 入口网格：数字专项（跳转现有`numbers`页，不变）、拼写专项（跳转新的`spelling`页）、连读弱读专项（本轮先做成禁用/"即将上线"的灰色卡片，第二轮再点亮）、同义替换专项（同上，灰色占位）、答案预测专项（同上，灰色占位）、我的错题（本轮先跳转到数字听力错题页，第二轮起再扩展成合并展示多专项错题）、能力分析（本轮先做成灰色占位，第三轮再点亮）。
+- 首页原来指向`numbers`页的入口（`public/app.js`里`data-go="numbers"`那处，约138行），改成指向这个新的`data-go="foundations"`枢纽页，不要保留两个并行入口造成用户困惑。
+- 视觉风格完全复用`numbers.js`已有的`.number-tile`/`.number-grid`卡片样式（灰色占位卡片加一个`disabled`态样式，点击无反应或提示"即将上线"，不需要新写一套CSS）。
+
+### 验收标准（必须给出可grep/可复现的证据，不接受"功能已实现/跑通不报错"这种笼统说法）
+
+写一个新的测试脚本 `test_listening_foundations.js`（或按你判断拆成多个文件，但都要能通过`npm test`一并跑到）：
+
+1. **迁移安全性**：构造一个模拟"当前生产数据库形状"的`cards`表（用现有`test_spelling.js`里`createLegacyCards`类似的手法，构造成**已经包含`front_audio`和`review_mode`列，且这两列有非默认值的真实数据**），初始化`ReviewDatabase`触发本轮的`source`列迁移后，断言：
+   - 每一行的`front_audio`、`review_mode`原值都完整保留（不是被清空成NULL/默认值）。
+   - 新增的`source`列存在且默认值是`'manual'`。
+   - 断言`migrateCardsTypeConstraint()`**没有被触发**（比如断言`cards`表在迁移前后是同一张表，没有经历`cards_new`重建这条路径——具体断言方式自行判断，目的是证明本轮改动确实走的是安全的`ALTER TABLE ADD COLUMN`路径，没有碰那条有隐患的表重建逻辑）。
+2. 不设置任何新内容的情况下，跑一遍全部既有测试文件（`test_srs.js`/`test_spelling.js`/`test_practice.js`/`test_speech.js`/`test_ui.js`/`test_listening.js`/`test_number_drill.js`/`test_access_token.js`/`test_feedback.js`），全部原样通过，证明本轮改动没有破坏任何现有功能。
+3. curl验证`error_type`标记流程：完成一次卡片复习（走`POST /api/review/:id`或`.../spelling`）判错，响应体里有`review_log_id`；用这个id调用`PUT /api/review/logs/:id/error-type` `{error_type:'SPELLING'}`返回200；对一个`result='correct'`的`review_logs`行调用同一接口返回400。
+4. curl验证听力真题错题收录流程：提交一次听力真题批改，构造至少一道错题；`GET /api/listening/attempts/:attemptId/items`能看到该题；`PUT .../error-type`能成功打标；`POST .../collect`能成功建卡且返回的卡片`source='real_error'`；对同一题再次调用`.../collect`返回400；`GET /api/cards`能看到这张新卡片。
+5. curl验证：现有`type`枚举（含`'同义替换'`/`'听力误听'`）不受影响，`POST /api/cards`创建这两类卡片依然正常；再验证`source`字段可以在创建卡片时显式传入`'real_error'`/`'ielts_material'`/`'ai_generated'`并被正确保存，不传时默认`'manual'`。
+6. 拼写专项页面CDP浏览器截图/DOM断言：能看到A-E五类入口+"我的错词"入口；点进任意一类能正常听题作答；构造一条刚答错的拼写卡数据，断言它会出现在"我的错词"筛选结果里。
+7. 专项训练首页CDP断言：能看到6个入口（数字/拼写/连读弱读占位/同义替换占位/答案预测占位/我的错题/能力分析占位），占位卡片点击无实际跳转或提示"即将上线"；首页原有入口改跳到这个新枢纽页。
+8. 移动端视口截图确认新增的`spelling.js`/`foundations.js`两个页面无横向溢出，视觉风格跟现有页面一致。
+
+本轮**只在本地**开发和测试，不部署、不碰PM2、不推GitHub。改完本地起开发服务器供用户在浏览器直接测试，用户确认没问题、且明确表示要继续第二轮之后，再另外写第二轮的SPEC。
+
+## 第一轮追加修正：去掉字母分类 + 正式复习前先"预习"（2026-09-13 用户实测反馈）
+
+用户本地试用后反馈两点：
+
+### 修正1：拼写专项去掉"字母"分类
+
+用户明确表示不需要练字母拼写。`src/domain/spellingCategories.js`里的`SPELLING_CATEGORY_LABELS`删掉`letter`这一项即可——`spelling.js`首页分类网格、卡片录入表单里的分类下拉，都是从`/api/foundations/meta`动态读取这份枚举渲染的，没有任何地方硬编码"字母"，删掉这一个key其余全部自动生效，不用改前端。删除前确认一下当前数据库里没有`spelling_category='letter'`的卡片（预期没有，因为这轮从没往这个分类导过内容），如果万一有则不强制清空，保留原样即可（枚举里没有这个值之后，只是这些卡片不会再出现在任何分类筛选里，不影响卡片本身存在）。
+
+### 修正2：正式复习（今日复习）开始前，先整体预习一遍这次要测的内容
+
+**问题**：现有"今日复习"是直接进入逐题盲测——尤其是拼写模式的卡片，正面不显示任何文字提示，全靠听音输入，如果是刚创建、用户根本没见过的生词（比如这轮刚导入的43张种子拼写卡、或者听力真题里刚收录的错题卡），用户在没学过的情况下被要求盲测，答不出来是必然的，体验很挫败。用户要求：**每次进入正式复习之前，先完整看一遍这一轮要测的全部内容（单词/表达+正确答案），看完再开始测**。
+
+**范围**：只影响`state.reviewKind === 'formal'`这一条路径（今日复习），不影响自由练习/单卡练习（这两个本来就是自愿的自测场景，不存在"没学过就被硬测"的问题，维持现状不动）。
+
+**后端**：新增一个只读接口`GET /api/review/queue/preview`，返回跟`GET /api/review/queue`完全相同的一批卡片（当天到期的卡片集合），区别是**不经过`safeReviewCard()`脱敏**——正常返回完整的`back`字段（包括拼写模式卡片），因为这个接口存在的目的就是让用户在测试前先看到答案完整学一遍。这不是安全漏洞：跟其他所有`/api/`接口一样受同一层`IELTS_ACCESS_TOKEN`口令保护，只是"用户看自己的数据"，不是对外暴露。`service.js`加一个`previewQueue()`方法，直接返回`this.db.dueCards(...)`不做脱敏处理即可，不要动`queue()`本身（它继续给实际盲测流程用，继续脱敏，不能改）。
+
+**前端**：`renderReview(reset=true)`（`public/app.js`约341行）目前逻辑是"拉一次`/api/review/queue`存进`state.queue`→直接渲染第一题盲测界面"。改成：
+1. `reset=true`时先调用新的`/api/review/queue/preview`拉一份完整数据用于展示预习列表（不覆盖`state.queue`，`state.queue`继续用现有脱敏接口的数据，保证后续盲测流程的脱敏逻辑完全不受影响）。
+2. 渲染一个"预习"页面：标题类似"复习前先看一遍"，列表展示这批卡片（每条：正面 + 背面正确答案 + 现有的朗读喇叭按钮，复用`speech.buttonHtml`），卡片数为0时（今日没有到期卡片）直接跳过预习、走原有的"全部完成"空状态。
+3. 预习页底部一个醒目按钮"开始测试"，点击后才真正调用`renderCurrentReview()`进入现有的逐题盲测流程（这部分完全不变）。
+4. 单卡练习/自由练习入口（`renderPractice()`）不受影响，不加预习步骤。
+
+**验收标准**：
+1. curl验证：`GET /api/review/queue/preview`返回的卡片里，拼写模式卡片包含明文`back`字段（不是`safeReviewCard`那种`spelling_audio`编码），跟`GET /api/review/queue`返回同一批卡片数量但字段不同。
+2. `SPELLING_CATEGORY_LABELS`确认不再包含`letter`键；curl验证`POST /api/cards`时传`spelling_category:'letter'`现在返回400（无效分类）。
+3. CDP浏览器断言：有到期卡片时，点击"今日复习"先进入预习列表页（能看到本轮全部卡片的正面+背面文字），点"开始测试"后才进入原有的逐题盲测界面（此时拼写卡片正面依旧不显示答案，跟修正前行为一致）；今日无到期卡片时，直接跳过预习进入原有空状态，不多一次无意义点击。
+4. CDP断言：单卡练习、自由练习入口点进去后**不**出现预习页面，直接进入原有练习流程，行为不变。
+5. 现有全部回归测试（含上一节新增的`test_listening_foundations.js`）原样通过。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。
+
+## 听力基础训练：调整路线图 + 数字听力错题改成可清空的错题库（2026-09-13 用户实测反馈）
+
+用户看过枢纽页截图后确认两个路线图决定，加一个功能缺陷：
+
+### 决定1：砍掉连读弱读专项、能力分析，去掉重复的"我的错题"入口
+
+- **连读弱读专项**：用户决定不做，不是"延后"，是彻底从路线图拿掉。`public/foundations.js`里`entries`数组删掉`['连读弱读专项', null]`这一项。第一轮SPEC里提到的"为连读弱读预留"相关描述均作废，不再规划这个模块。
+- **能力分析**：同样直接砍掉，删掉`['能力分析', null]`这一项，不再作为未来路线图的一部分。
+- **"我的错题"（枢纽层）**：删掉`['我的错题', 'mistakes']`这一项，以及`public/app.js`里挂给`foundations`页面的`openNumberMistakes`回调（约114-117行），因为这个入口只是转跳到数字专项自己的错题页，跟数字专项首页里本来就有的"错题"按钮完全重复，属于多余的第二入口。数字专项内部的错题入口保留不动。
+- 调整后枢纽页只剩4个入口：数字专项、拼写专项、同义替换专项（占位，"即将上线"）、答案预测专项（占位，"即将上线"）。
+
+### 决定2：同义替换专项测试模式定为"回忆型"（本节暂不实现，先记录决定，第二轮写完整SPEC时采用）
+
+跟用户讨论后确定：同义替换专项复用现有`同义替换`类型卡片（front=题目表达，back=原文表达），测试模式为"看题干、输入回忆的原文表达、提交后用现有模糊匹配（`answerMatches`）判分、揭晓正确答案"，不做选择题模式（避免为干扰项数据增加内容负担）。**本节不实现，留到第二轮同义替换专项的完整SPEC里落地**，这里只是把讨论结论存档，避免以后遗忘。
+
+### 决定3：数字听力"错题"要能逐条复习，答对自动移出（功能缺陷修复）
+
+**问题**：现有`number_drill_attempts`是一份只读的答题日志——`GET /api/numbers/mistakes`永远只是"最近若干条答错的记录"，没有"这道错题解决了"的概念。用户反馈"错题无法进行整体回顾复习"，要求：**错题列表里每一条都能单独重新测一次，测对了这条就从错题列表里自动消失，不再需要**。
+
+**数据模型**：`number_drill_attempts`表加一列：
+```sql
+ALTER TABLE number_drill_attempts ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0 CHECK (resolved IN (0,1))
+```
+普通`ALTER TABLE ADD COLUMN`，安全，不涉及`cards`表、不触发任何表重建。
+
+**判定"解决"的逻辑**：不是按category笼统清空，是**逐条**——错题列表每一条答错记录都有自己的`id`，用户点这一条的"复习这道错题"，会用同一个category/subtype重新生成一道新题（数字听力本身每题都是随机生成的，不存在"一模一样再考一次"，所以复习的是"同类型再考一道"，跟现有"重新练习这一类"的题目生成逻辑一致），**如果这次答对了，就把用户点进来时对应的那一条错题记录标记为`resolved=1`**；如果又答错了，原来那条不变（依然待解决），这次新的错误会按现有逻辑照常插入一条新的错题记录（不用特殊去重，符合"每次错误都留痕"的现有设计）。
+
+**API**：
+- `GET /api/numbers/mistakes`：查询条件加上`AND resolved = 0`（`src/db.js`的`numberDrillMistakes`方法），只返回还没解决的错题。
+- `POST /api/numbers/answer`：body 增加一个可选字段 `resolvingMistakeId`（数字或省略）。若提供：
+  - 校验该id对应一条`is_correct=0 AND resolved=0`的记录，找不到就静默忽略（不报错、不阻断本次正常提交），避免"错题在别的标签页已经被解决/过期"这种竞态导致用户提交失败。
+  - 若这次提交判定为`isCorrect=true`，在写入本次新答题记录的同一个事务里，把`resolvingMistakeId`指向的那条记录`resolved`置为`1`。
+  - 若这次提交判定为`isCorrect=false`，不修改`resolvingMistakeId`指向的记录（保持未解决）。
+
+**前端**（`public/numbers.js`）：
+1. `mistakes()`渲染的每条错题，原来的"重新练习这一类"按钮改成"复习这道错题"，点击后调用`practice({mode, category, subtype}, null, { resolvingMistakeId: row.id })`（`practice`函数新增第三个可选参数`extra`，合并进`post('answer', {...})`的请求体）。
+2. 复习流程本身（听题、输入、提交、看结果）不变，只是提交时多带这一个字段。
+3. 答对后如果这次提交是在"复习错题"入口进来的，反馈区可以顺带提示一句"这道错题已从错题库移出"（文案自定，非强制，属于锦上添花，没做也不算验收失败）。
+
+**验收标准**：
+1. curl验证：制造一条错题（提交错误答案拿到某个`number_drill_attempts.id`），`GET /api/numbers/mistakes`能看到它；用**同一个questionId流程重新生成一题**、提交时带上`resolvingMistakeId`且这次答对，断言响应`isCorrect:true`；再次`GET /api/numbers/mistakes`，断言这条记录不再出现。
+2. curl验证：制造另一条错题，复习时带上`resolvingMistakeId`但这次又答错，断言`GET /api/numbers/mistakes`里原来那条依然存在，且多了一条新的错题记录（两条都在，都未解决）。
+3. curl验证：`resolvingMistakeId`传一个不存在的id，正常提交答案（无论对错）都不应该报错，行为等同于不传这个字段。
+4. CDP浏览器断言：进入错题页，点其中一条的"复习这道错题"，进入的确实是同一个category/subtype的练习界面；答对后返回错题页，断言这条记录已经从列表消失；错题清空到0条时，页面正确显示"还没有错题"的空状态。
+5. 现有全部回归测试（含前两节新增的测试文件）原样通过。
+6. CDP断言：枢纽页只剩4个入口（数字/拼写/同义替换占位/答案预测占位），不再出现连读弱读、能力分析、我的错题；数字专项首页自带的"错题"入口依然可以正常进入错题页。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。
+
+
+## 数字听力错题改成"整套排队复习"，而非逐条独立按钮（2026-09-13 用户实测反馈，修正上一节的理解偏差）
+
+用户实测反馈：上一节把"错题可以逐条复习、答对自动移出"做成了**每条错题各自一个孤立按钮**——点一条的"复习这道错题"，只是单独生成一道同类别新题，答完之后没有任何"回到错题队列、接着处理下一条"的衔接，行为等同于"重新练习这一类"（回到最初那个版本的体验）。用户要的其实是**把整个错题列表当一套题连续做下去**：点一个入口开始，系统依次把每一条未解决的错题各自出一道同类别新题，一条做完自动进入下一条，全部做完给一个总结（类似现有"考试模式"的体验），而不是每条错题单独一个孤岛按钮。
+
+**这不需要改动上一节写的后端逻辑**——`resolvingMistakeId`在单次提交时原子标记解决的机制完全正确、继续保留；本节纯粹是把前端"一条错题、一次性单点练习"的交互，换成"一套错题、连续排队练习"的交互，参照`public/numbers.js`里已有的"考试模式"（`examSetup`/`examQuestion`/`practice(config, exam)`那一套`{id, count, index}`排队+计数+结束总结的现成模式，只是把"随机混合出题"换成"按错题列表顺序逐条出题，且每题带上对应的`resolvingMistakeId`"。
+
+**前端改动**（`public/numbers.js`）：
+1. 错题页顶部加一个"开始复习错题"入口（在列表上方，不是每条错题各自的按钮），点击后：把当前`GET /api/numbers/mistakes?limit=100`拿到的完整列表（未解决错题最多100条，够用）作为一个复习会话的题目序列。
+2. 复习会话结构类似现有`exam`对象：`{mistakeQueue: [...], index: 0, resolvedCount: 0}`。每一步：用当前`mistakeQueue[index]`的`category`/`subtype`调用`POST /api/numbers/question`生成一道**新的同类别题目**（数字是随机的，做不到复现原题原数字，这个限制维持不变，跟上一节说明的一致），作答界面完全复用现有`practice()`渲染逻辑，提交时额外带上`resolvingMistakeId: mistakeQueue[index].id`。
+3. 每一题作答完（无论对错）出现"下一条"按钮（不是"下一题"泛泛的意思，文案体现"这是错题复习的第N/总M条"），点击后`index += 1`，若答对则`resolvedCount += 1`；`index`到达队列长度时，展示总结页——类似现有考试成绩页，展示"本轮复习了N条错题，解决了M条，剩余(N-M)条"，并提供"返回错题列表"按钮。
+4. 原来每条错题各自的"复习这道错题"单点按钮**去掉**，错题列表本身只做展示（分类/时间/你的答案/正确答案），不再挂练习入口；练习入口收敛到顶部"开始复习错题"这一个统一入口。
+5. 如果错题列表为空，"开始复习错题"这个入口本身也不展示（或展示后点击提示"暂无错题"，实现方式自定，保证不会出现空跑一次0题复习会话的怪异体验）。
+
+**验收标准**：
+1. curl验证：`resolvingMistakeId`相关的后端行为（同一事务原子标记解决、无效id静默忽略、答错不影响原记录）延用上一节已经验证过的部分，本节不需要重复造后端场景，只需确认后端代码没有被动到（对照上一节的`src/db.js`/`src/services.js`相关方法，diff应为空）。
+2. CDP浏览器断言：构造3条未解决错题（分属不同category），点击"开始复习错题"，依次完成3道题（可以设计成2对1错），断言：每答完一题自动进入下一条（不需要用户额外点返回错题列表再点下一条错题的按钮）；全部完成后出现总结页，显示"复习3条 · 解决2条"这类信息（具体文案自定，数字要对）；返回错题列表后，断言之前答对的那条不见了，答错的那条还在。
+3. CDP断言：错题列表页面不再存在任何单条错题自带的独立"复习"入口，练习入口只有顶部这一个。
+4. 现有全部回归测试原样通过。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。
+
+## 同义替换专项：回忆型测试模式（2026-09-13，落地此前存档的设计决定）
+
+复用现有`cards`表`type='同义替换'`的卡片（`front`=题目表达，`back`=原文表达），**不限定`skill`**（阅读、听力的同义替换卡都算进来，因为同义替换本来就是两项共用的能力，没必要人为割裂）。测试模式是"看题干、手写回忆原文表达、提交后模糊匹配判分、揭晓正确答案"——完全复用现成的`answerMatches`（`src/domain/answerMatch.js`），**不做选择题、不需要干扰项数据**。
+
+跟拼写专项一样，这是一个**只读自测**，不写`review_logs`、不改`box`、不计入SRS进度、不提供错因标记（原因见前面拼写专项那一节："自由练习不计入进度"是同一条既定原则，这里同样适用）。真正要让同义替换卡片计入正式复习进度，走现有的"今日复习"翻卡流程即可（这些卡片本来就在那套流程里，本节不改动它）。
+
+### 数据层
+不需要新表、不需要新列。新增两个db方法（仿照已有的`spellingCards`）：
+- `paraphraseCards(mistakes)`：`SELECT * FROM cards WHERE type='同义替换'`，`mistakes=true`时加上跟`spellingCards`一致的"box=1 或最近一条review_log是incorrect"条件，`ORDER BY RANDOM()`。
+
+### API
+- `GET /api/paraphrase/cards?mistakes=true`：返回卡片列表（正常返回完整字段包括`back`——这里不是拼写卡那种"防止提前听到答案"的场景，同义替换本来就是文字对文字，不存在"偷听"问题，不需要脱敏）。
+- `POST /api/paraphrase/cards/:id/test` `{answer}`：读现有卡片，`answerMatches(answer, card.back)`判分，返回`{correct, correct_answer: card.back}`，不落库、不改卡片状态（完全对照`gradePracticeSpelling`的模式）。
+
+### 前端
+新增`public/paraphrase.js`（跟`spelling.js`同级）：
+1. 首页两个入口："开始练习"（从全部同义替换卡随机抽一张）、"我的错题"（`mistakes=true`筛选）。
+2. 练习界面：显示卡片`front`（题目表达，文字直接展示，不用听力形式），输入框填写用户回忆的原文表达，提交后展示"正确答案：xxx"，带朗读按钮（复用`speech.buttonHtml`），一个"下一张"按钮换下一张。
+3. 顶部常驻"专项自测，本轮不影响复习进度"提示条（复用已有的自由练习提示条样式）。
+4. 听力基础训练枢纽页点亮"同义替换专项"这个入口（`public/foundations.js`的`entries`数组，把`['同义替换专项', null]`改成`['同义替换专项', 'paraphrase']`），`public/app.js`的`navigate()`加一条`if (page === 'paraphrase') await window.IeltsParaphrase.mount({...})`（参数集合照抄`spelling`那一条）。
+
+### 验收标准
+1. curl验证：`GET /api/paraphrase/cards`返回的卡片包含明文`back`字段（不脱敏）；`mistakes=true`时只返回符合条件的卡片。
+2. curl验证：`POST /api/paraphrase/cards/:id/test`提交正确答案（含`/`分隔的任一个可接受答案）返回`correct:true`；提交错误答案返回`correct:false`且带出`correct_answer`；提交后用`GET /api/cards`确认该卡片的`box`/`review_count`/`review_logs`均未发生任何变化（证明确实是只读自测，没有偷偷写入正式复习记录）。
+3. CDP浏览器断言：枢纽页"同义替换专项"可点击进入（不再是灰色占位）；练习界面能看到题干、输入答案、提交后显示正确答案+朗读按钮；顶部"专项自测"提示条持续可见；"我的错题"筛选下，构造一张刚答错的同义替换卡，断言它会出现在结果里。
+4. 移动端视口截图确认新页面无横向溢出，视觉风格跟现有页面一致。
+5. 现有全部回归测试原样通过。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。**答案预测专项体量较大（需要新表、新的"先猜类型再放音频再填空"两段式流程），单独写一节SPEC、单独派发一轮，不跟本节混在一起**，见下一节。
+
+## 答案预测专项（2026-09-13，独立一轮，参照数字听力模块的既有架构）
+
+目标（照搬用户最初确认的GPT方案里这一块，未做删减）：训练"听音频之前，先根据题干预判答案类型"这个能力。流程严格分两步：**STEP1 只看文字题干、不放音频，先选答案类型 → STEP2 提交预测后才播放音频、再填写真实答案 → 系统分别统计"预测类型对不对"和"填写答案对不对"这两个独立正确率，不混成一个数字**。
+
+### 内容来源：手写题库，不做数据库表，模式完全照抄`numberDrill.js`的`DIALOGUE_TEMPLATES`
+
+跟数字听力的对话模板一样，题目内容是**代码里手写的常量数组**，不是用户录入、也不是AI临时生成灌库——这些是客观的"完形填空+答案类型"配对，不涉及"语料是否地道/真实"这种需要谨慎对待的内容真实性问题（类比数字听力的对话模板本来就是手写的场景句子），可以直接在`src/domain/predictionDrill.js`里写死一批（不少于15条，覆盖下面全部9种类型至少各1条）。
+
+每条模板结构：
+```js
+{ sentence: 'The total cost is £{V}.', answerType: 'NUMBER', fillers: ['45', '120', '89.50'] }
+```
+- `sentence`：带`{V}`占位符的完形填空句子。
+- `answerType`：这条模板的标准答案类型，枚举值固定9个：`NUMBER`/`NOUN`/`VERB`/`ADJECTIVE`/`DATE`/`TIME`/`PLACE`/`NAME`/`OTHER`（对应GPT方案里的Number/Noun/Verb/Adjective/Date/Time/Place/Name/Other）。
+- `fillers`：这条模板可用的具体填空值候选（每次出题从里面随机选一个），值本身是最终要填进空里、要被朗读、也是用户要填写的正确答案。
+
+举例（自行扩充到15条以上，覆盖9个类型）：
+- `NUMBER`: "The total cost is £{V}." fillers: ['45', '120', '89.50']
+- `NOUN`: "Please bring a valid {V}." fillers: ['passport', 'membership card', 'student ID']
+- `PLACE`: "The meeting will be held near the {V}." fillers: ['car park', 'main entrance', 'library']
+- `NAME`: "You can contact {V} for more details." fillers: ['Mr Harrison', 'Dr Patel', 'Ms Coleman']
+- `DATE`: "The workshop starts on {V}." fillers: ['the third of May', 'the twelfth of June']（复用`numberDrill.js`已有的日期口语化风格，`{V}`直接是最终朗读文本，不需要跟数字听力共享生成逻辑）
+- `TIME`: "Registration closes at {V}." fillers: ['half past nine', 'a quarter to five']
+- `VERB`: "Applicants must {V} before the deadline." fillers: ['submit their forms', 'pay the deposit', 'attend an interview']
+- `ADJECTIVE`: "The new library is extremely {V}." fillers: ['spacious', 'convenient', 'crowded']
+- `OTHER`: 至少1条不好归到以上8类的题目，用于验证"其他"选项确实可选可判。
+
+`spokenText`（喂给TTS朗读的内容）= `sentence`把`{V}`替换成选中的filler后的完整句子（这样"听音频"时听到的是完整语境句，而不是单独朗读那个词，更贴近真实IELTS场景）。
+
+### 数据模型
+
+新增`prediction_drill_attempts`表：
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | int PK | |
+| sentence_template | text | 出题时的原始模板句子（含`{V}`），用于错题回顾时展示 |
+| correct_type | text | 该模板的标准答案类型 |
+| predicted_type | text | 用户提交的预测类型 |
+| prediction_correct | int (0/1) | |
+| correct_answer | text | 实际填入的filler值 |
+| user_answer | text | 用户听完后填写的答案 |
+| answer_correct | int (0/1) | |
+| attempted_at | text | |
+
+不新建"待作答题目"表：沿用数字听力已经验证过的模式——进程内内存Map（`pendingPredictionQuestions`，10分钟TTL，同样的清理方式），出题和"提交预测"阶段都只是更新内存里这条记录的状态，直到最终提交答案才落库、才从内存删除。
+
+### API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/prediction/question | 随机选一条模板+一个filler，存入内存，返回`{questionId, sentenceWithBlank}`（`sentenceWithBlank`=模板句子本身，`{V}`保留成占位符或替换成"______"展示均可，**禁止**在这一步返回`answerType`、`spokenText`、`correctAnswer`，这是STEP1"先看题干猜类型"阶段，音频和答案都不能提前泄露） |
+| POST | /api/prediction/predict | body `{questionId, predictedType}`，校验`predictedType`是9个枚举之一，记录到内存里这条题目的状态上（标记"已预测"），返回`{spokenText}`（此时才可以安全下发音频文本，因为类型已经锁定提交，用户没法回头改） |
+| POST | /api/prediction/answer | body `{questionId, userAnswer}`，要求这条题目必须已经经过`predict`这一步（没预测就直接调用`answer`要报400，不能跳过STEP1）。用`answerMatches`比对`userAnswer`和该题的filler值判定`answerCorrect`；比对`predictedType`和模板`answerType`判定`predictionCorrect`；两者都写入`prediction_drill_attempts`；返回`{predictionCorrect, answerCorrect, correctType, correctAnswer, sentence}`（`sentence`把`{V}`替换成`correctAnswer`后的完整句子，方便前端展示"完整原句"） |
+| GET | /api/prediction/stats | 分别统计：`predictionAccuracy`（类型猜对的比例）、`answerAccuracy`（答案填对的比例）——**两个独立数字，不合并**，另外`total`（总答题数） |
+| GET | /api/prediction/mistakes?limit=20 | 最近的记录里`prediction_correct=0`或`answer_correct=0`任一为假的（只要有一项错就算需要回顾），按时间倒序 |
+
+### 前端
+
+新增`public/prediction.js`（跟`numbers.js`同级）：
+1. 首页：入口大按钮"开始预测"+"错题""统计"两个小入口，视觉风格照抄`numbers.js`的`home()`。
+2. 练习界面分两屏：
+   - **STEP1屏**：展示`sentenceWithBlank`（文字，不放音频、没有喇叭按钮），9个类型按钮（Number/Noun/Verb/Adjective/Date/Time/Place/Name/Other，中文标签自定但要覆盖全部9个），点选一个后提交调用`predict`。
+   - **STEP2屏**：提交预测后才出现喇叭按钮（调用`speech.speak`播放刚拿到的`spokenText`）+ 输入框填写听到的答案，提交调用`answer`，展示反馈：**分两行**分别标"预测：对/错（你选的xxx，正确是xxx）"和"答案：对/错（正确答案：xxx）"，不要合并成一句话或一个笼统的"回答正确/错误"。
+3. 枢纽页点亮"答案预测专项"（`public/foundations.js`的`entries`数组，`['答案预测专项', null]`改成`['答案预测专项', 'prediction']`），`app.js`的`navigate()`加对应路由。
+
+### 验收标准
+
+写一个新的测试脚本`test_prediction_drill.js`：
+1. 断言模板数量≥15，且9个`answerType`每个至少出现1条模板；每条模板的`fillers`至少1个候选值。
+2. curl验证STEP1响应`POST /api/prediction/question`**不包含**`answerType`/`spokenText`/`correctAnswer`任何一个字段。
+3. curl验证：不先调用`predict`直接调用`answer`，返回400。
+4. curl验证一次"类型对、答案对"的完整流程：`predict`传对的类型，`answer`传对的filler值，断言`predictionCorrect:true, answerCorrect:true`；`GET /api/prediction/stats`两个正确率都反映出这次记录。
+5. curl验证一次"类型错、答案对"和一次"类型对、答案错"，分别断言`predictionCorrect`/`answerCorrect`两个字段独立正确地表现出"一对一错"的四种组合里的这两种（连同上一条的"都对"，覆盖至少3种组合）。
+6. curl验证`GET /api/prediction/mistakes`能看到上面任一项判错的记录。
+7. CDP浏览器断言：STEP1屏幕看不到喇叭按钮和输入框（只有9个类型按钮）；点选类型提交后STEP2屏幕才出现喇叭+输入框；提交后反馈区域能看到"预测"和"答案"两行独立的对错展示；移动端视口无横向溢出。
+8. 现有全部回归测试原样通过，数字听力/拼写/同义替换三个已有专项功能不受影响。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。
+
+## 数字听力专项首页"返回专项"按钮点不动（2026-09-13 用户实测反馈，小修复）
+
+**根因**：`public/numbers.js`是四个专项模块里最早写的那个，写的时候还没有"听力基础训练"枢纽页，所以它挂载时（`public/app.js`约115行`window.IeltsNumbers.mount({...})`）**没有拿到`navigate`函数**——跟另外三个模块（`spelling`/`paraphrase`/`prediction`挂载时都带了`navigate`）不一样。`numbers.js`内部通用的`page(title, subtitle, html)`辅助函数会给每个子页面自动加一个"返回专项"按钮，统一绑定到`onclick = home`（回到数字专项自己的首页）——这对"练习/错题/统计/考试"这些子页面是对的，但数字专项**首页自己也是用`page()`渲染的**，所以首页上的"返回专项"按钮点了等于`home()`调用`home()`，原地刷新自己，看起来就是"点了没反应"。
+
+对照现有已经写对的模式（`spelling.js`/`paraphrase.js`的首页"返回专项"按钮，点击后是`navigate('foundations')`回到枢纽页；它们的子页面"返回分类"/"返回首页"按钮，点击后才是回到各自模块自己的首页）——`numbers.js`唯独首页那个按钮的目标绑错了，改成一致的行为即可。
+
+**修复要求**：
+1. `public/app.js`：数字专项的挂载调用加上`navigate`，改成`window.IeltsNumbers.mount({ root, api, escapeHtml, speech, showToast, navigate });`。
+2. `public/numbers.js`：`home()`函数里，调用完`page(...)`之后，把`#numbers-home`按钮的`onclick`重新绑定成`() => context.navigate('foundations')`（覆盖掉`page()`默认绑的`home`），其余子页面（练习/错题/统计/考试）的"返回专项"按钮维持现有行为不变（回到数字专项自己的首页）。
+
+**验收标准**：
+1. CDP浏览器断言：进入数字专项首页，点击"返回专项"，断言页面跳转到"听力基础训练"枢纽页（能看到4个专项入口），不是原地刷新数字专项首页。
+2. CDP断言：从数字专项首页进入"练习"/"错题"/"统计"/"考试模式"任一子页面，点击"返回专项"，断言正确回到数字专项自己的首页（这部分现有行为不能改坏）。
+3. 现有全部回归测试原样通过。
+
+不部署、不碰PM2、不推GitHub，本地验证完再由用户决定后续。

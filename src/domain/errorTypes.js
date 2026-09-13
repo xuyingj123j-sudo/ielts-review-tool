@@ -1,0 +1,12 @@
+'use strict';
+
+const ERROR_TYPES = Object.freeze([
+  'UNKNOWN_WORD', 'SOUND_RECOGNITION', 'SPELLING', 'SENTENCE_COMPREHENSION',
+  'PARAPHRASE', 'DISTRACTOR', 'PREDICTION', 'LOST_POSITION', 'OTHER'
+]);
+const ERROR_TYPE_LABELS = Object.freeze({
+  UNKNOWN_WORD: '生词/词汇量', SOUND_RECOGNITION: '听音辨识', SPELLING: '拼写',
+  SENTENCE_COMPREHENSION: '原文理解', PARAPHRASE: '同义替换', DISTRACTOR: '干扰信息',
+  PREDICTION: '答案预测', LOST_POSITION: '跟丢位置', OTHER: '其他'
+});
+module.exports = { ERROR_TYPES, ERROR_TYPE_LABELS };

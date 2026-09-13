@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const { SKILLS, TYPES } = require('./db');
 const { addDays, toLocalDate, transition } = require('./domain/srs');
 const { answerMatches } = require('./domain/answerMatch');
+const { ERROR_TYPES, ERROR_TYPE_LABELS } = require('./domain/errorTypes');
+const { SPELLING_CATEGORY_LABELS } = require('./domain/spellingCategories');
+const CARD_SOURCES = Object.freeze(['real_error', 'manual', 'ielts_material', 'ai_generated']);
 const {
   CHECKLIST_FIELDS,
   SECTION_UNLOCK_STREAK,
@@ -18,9 +21,14 @@ const {
   generateQuestion,
   gradeAnswer
 } = require('./domain/numberDrill');
+const {
+  ANSWER_TYPES: PREDICTION_ANSWER_TYPES,
+  generatePredictionQuestion
+} = require('./domain/predictionDrill');
 
 const WEEKLY_WRITING_TARGET = 1;
 const NUMBER_QUESTION_TTL_MS = 10 * 60 * 1000;
+const PREDICTION_QUESTION_TTL_MS = 10 * 60 * 1000;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -47,6 +55,7 @@ class ReviewService {
     this.db = database;
     this.clock = clock;
     this.pendingNumberQuestions = new Map();
+    this.pendingPredictionQuestions = new Map();
   }
 
   listCards(query) {
@@ -60,7 +69,14 @@ class ReviewService {
     if (!SKILLS.includes(input.skill)) throw new HttpError(400, '技能必须是听力、阅读、口语或写作');
     if (!TYPES.includes(input.type)) throw new HttpError(400, '卡片类型无效');
     if (!['flip', 'spelling'].includes(input.review_mode ?? 'flip')) throw new HttpError(400, '复习模式无效');
+    if (input.source !== undefined && !CARD_SOURCES.includes(input.source)) throw new HttpError(400, '卡片来源无效');
+    const category = input.spelling_category ?? null;
+    if (category !== null && (!Object.hasOwn(SPELLING_CATEGORY_LABELS, category) || input.review_mode !== 'spelling')) {
+      throw new HttpError(400, '拼写分类无效，只有拼写测试卡片可设置分类');
+    }
     return {
+      source: input.source === undefined ? 'manual' : input.source,
+      spellingCategory: category,
       skill: input.skill,
       type: input.type,
       front: validateText(input.front, '正面'),
@@ -92,6 +108,10 @@ class ReviewService {
 
   queue() {
     return this.db.dueCards(toLocalDate(this.clock())).map((card) => this.safeReviewCard(card));
+  }
+
+  previewQueue() {
+    return this.db.dueCards(toLocalDate(this.clock()));
   }
 
   safeReviewCard(card) {
@@ -195,6 +215,7 @@ class ReviewService {
       correct_answer: card.back,
       box_before: state.boxBefore,
       box_after: updated.box,
+      review_log_id: updated.review_log_id,
       next_review_date: updated.next_review_date
     };
   }
@@ -343,6 +364,7 @@ class ReviewService {
       attemptDate: toLocalDate(this.clock()),
       scoreCorrect: score.score_correct,
       scoreTotal: score.score_total,
+      grading: score.grading,
       checkGist: Number(checks.check_gist),
       checkKeySentences: Number(checks.check_key_sentences),
       checkParaphrase: Number(checks.check_paraphrase),
@@ -357,6 +379,72 @@ class ReviewService {
       score_total: score.score_total,
       stages: this.listeningProgress()
     };
+  }
+
+  foundationsMetadata() {
+    return { errorTypes: ERROR_TYPE_LABELS, spellingCategories: SPELLING_CATEGORY_LABELS };
+  }
+
+  spellingCards(query) {
+    if (query.category !== undefined && !Object.hasOwn(SPELLING_CATEGORY_LABELS, query.category)) throw new HttpError(400, '拼写分类无效');
+    if (query.mistakes !== undefined && query.mistakes !== 'true') throw new HttpError(400, '错词筛选无效');
+    return this.db.spellingCards(query.category, query.mistakes === 'true').map(card => this.safeReviewCard(card));
+  }
+
+  paraphraseCards(query) {
+    if (query.mistakes !== undefined && query.mistakes !== 'true') throw new HttpError(400, '错题筛选无效');
+    return this.db.paraphraseCards(query.mistakes === 'true');
+  }
+
+  gradePracticeParaphrase(id, input) {
+    const card = this.db.getCard(id);
+    if (!card) throw new HttpError(404, '卡片不存在');
+    if (card.type !== '同义替换') throw new HttpError(400, '该卡片不是同义替换卡片');
+    const answer = validateText(input?.answer, '回忆答案');
+    return { correct: answerMatches(answer, card.back), correct_answer: card.back };
+  }
+
+  validateErrorType(value) {
+    if (value !== null && !ERROR_TYPES.includes(value)) throw new HttpError(400, '错因必须是有效枚举或 null');
+    return value;
+  }
+
+  markReviewError(id, input) {
+    const log = this.db.reviewLog(id);
+    if (!log) throw new HttpError(404, '复习记录不存在');
+    if (log.result !== 'incorrect') throw new HttpError(400, '只能标记答错的复习记录');
+    return this.db.setReviewError(id, this.validateErrorType(input?.error_type));
+  }
+
+  listeningItems(attemptId) {
+    const attempt = this.db.listeningAttempt(attemptId);
+    if (!attempt) throw new HttpError(404, '听力练习记录不存在');
+    const transcript = this.db.getListeningSection(attempt.section_id).transcript_text;
+    return this.db.listeningItems(attemptId).map(item => {
+      const marker = new RegExp(`\\(Q${item.question_number}\\)`, 'i').exec(transcript);
+      return { ...item, context: marker ? transcript.slice(Math.max(0, marker.index - 160), marker.index + marker[0].length + 160).replace(/\(Q\d+\)/gi, '').trim() : '' };
+    });
+  }
+
+  incorrectListeningItem(attemptId, number) {
+    const item = this.db.listeningItem(attemptId, number);
+    if (!item) throw new HttpError(404, '逐题明细不存在');
+    if (item.is_correct) throw new HttpError(400, '只能处理错题');
+    return item;
+  }
+
+  markListeningError(attemptId, number, input) {
+    this.incorrectListeningItem(attemptId, number);
+    return this.db.setListeningError(attemptId, number, this.validateErrorType(input?.error_type));
+  }
+
+  collectListeningCard(attemptId, number, input) {
+    return this.db.collectListeningCard(attemptId, number, () => {
+      const item = this.incorrectListeningItem(attemptId, number);
+      if (item.collected_card_id !== null) throw new HttpError(400, '这道错题已经收录');
+      const { skill, type, front, back, note } = input || {};
+      return this.createCard({ skill, type, front, back, note, source: 'real_error' });
+    });
   }
 
   cleanupNumberQuestions() {
@@ -413,6 +501,7 @@ class ReviewService {
       correctAnswer: question.correctAnswer,
       userAnswer
     });
+    const resolvingMistakeId = Number.isInteger(input?.resolvingMistakeId) ? input.resolvingMistakeId : null;
     this.db.createNumberDrillAttempt({
       mode: question.mode,
       category: question.category,
@@ -424,7 +513,7 @@ class ReviewService {
       isCorrect: Number(isCorrect),
       examSessionId,
       attemptedAt: localDateTime(this.clock())
-    });
+    }, resolvingMistakeId);
     this.pendingNumberQuestions.delete(questionId);
     return { isCorrect, correctAnswer: question.correctAnswer, promptText: question.promptText, spokenText: question.spokenText };
   }
@@ -486,6 +575,96 @@ class ReviewService {
       byCategory
     };
   }
+
+  cleanupPredictionQuestions() {
+    const cutoff = this.clock().getTime() - PREDICTION_QUESTION_TTL_MS;
+    for (const [questionId, question] of this.pendingPredictionQuestions) {
+      if (question.createdAt <= cutoff) this.pendingPredictionQuestions.delete(questionId);
+    }
+  }
+
+  predictionQuestion() {
+    this.cleanupPredictionQuestions();
+    const question = generatePredictionQuestion();
+    const questionId = crypto.randomUUID();
+    this.pendingPredictionQuestions.set(questionId, {
+      ...question,
+      predictedType: null,
+      createdAt: this.clock().getTime()
+    });
+    return { questionId, sentenceWithBlank: question.sentenceWithBlank };
+  }
+
+  predictAnswerType(input) {
+    this.cleanupPredictionQuestions();
+    const questionId = typeof input?.questionId === 'string' ? input.questionId.trim() : '';
+    const predictedType = input?.predictedType;
+    if (!PREDICTION_ANSWER_TYPES.includes(predictedType)) throw new HttpError(400, '预测类型无效');
+    const question = this.pendingPredictionQuestions.get(questionId);
+    if (!question) throw new HttpError(400, '题目不存在、已作答或已过期');
+    if (question.predictedType !== null) throw new HttpError(400, '答案类型已经提交，不能修改');
+    question.predictedType = predictedType;
+    return { spokenText: question.spokenText };
+  }
+
+  answerPredictionQuestion(input) {
+    this.cleanupPredictionQuestions();
+    const questionId = typeof input?.questionId === 'string' ? input.questionId.trim() : '';
+    if (typeof input?.userAnswer !== 'string' || input.userAnswer.length > 5000) {
+      throw new HttpError(400, '答案必须是5000字以内的文本');
+    }
+    const question = this.pendingPredictionQuestions.get(questionId);
+    if (!question) throw new HttpError(400, '题目不存在、已作答或已过期');
+    if (question.predictedType === null) throw new HttpError(400, '请先提交答案类型预测');
+    const predictionCorrect = question.predictedType === question.answerType;
+    const answerCorrect = answerMatches(input.userAnswer, question.correctAnswer);
+    this.db.createPredictionDrillAttempt({
+      sentenceTemplate: question.sentenceTemplate,
+      correctType: question.answerType,
+      predictedType: question.predictedType,
+      predictionCorrect: Number(predictionCorrect),
+      correctAnswer: question.correctAnswer,
+      userAnswer: input.userAnswer,
+      answerCorrect: Number(answerCorrect),
+      attemptedAt: localDateTime(this.clock())
+    });
+    this.pendingPredictionQuestions.delete(questionId);
+    return {
+      predictionCorrect,
+      answerCorrect,
+      correctType: question.answerType,
+      correctAnswer: question.correctAnswer,
+      sentence: question.spokenText
+    };
+  }
+
+  predictionStats() {
+    this.cleanupPredictionQuestions();
+    const row = this.db.predictionDrillStats();
+    return {
+      total: row.total,
+      predictionAccuracy: row.total ? Math.round(row.prediction_correct * 100 / row.total) : null,
+      answerAccuracy: row.total ? Math.round(row.answer_correct * 100 / row.total) : null
+    };
+  }
+
+  predictionMistakes(limitValue) {
+    this.cleanupPredictionQuestions();
+    const limit = limitValue === undefined ? 20 : Number(limitValue);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, 'limit 必须是 1-100 的整数');
+    return this.db.predictionDrillMistakes(limit).map((attempt) => ({
+      ...attempt,
+      prediction_correct: Boolean(attempt.prediction_correct),
+      answer_correct: Boolean(attempt.answer_correct)
+    }));
+  }
 }
 
-module.exports = { HttpError, NUMBER_QUESTION_TTL_MS, ReviewService, WEEKLY_WRITING_TARGET, localDateTime };
+module.exports = {
+  HttpError,
+  NUMBER_QUESTION_TTL_MS,
+  PREDICTION_QUESTION_TTL_MS,
+  ReviewService,
+  WEEKLY_WRITING_TARGET,
+  localDateTime
+};

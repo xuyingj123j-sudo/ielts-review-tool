@@ -30,6 +30,14 @@ function createApp(service, options = {}) {
     res.status(204).end();
   });
   app.get('/api/review/queue', (req, res) => res.json(service.queue()));
+  app.get('/api/review/queue/preview', (req, res) => res.json(service.previewQueue()));
+  app.get('/api/foundations/meta', (req, res) => res.json(service.foundationsMetadata()));
+  app.get('/api/spelling/cards', (req, res) => res.json(service.spellingCards(req.query)));
+  app.get('/api/paraphrase/cards', (req, res) => res.json(service.paraphraseCards(req.query)));
+  app.post('/api/paraphrase/cards/:id/test', (req, res) => {
+    res.json(service.gradePracticeParaphrase(parseId(req.params.id), req.body || {}));
+  });
+  app.put('/api/review/logs/:id/error-type', (req, res) => res.json(service.markReviewError(parseId(req.params.id, '复习记录'), req.body)));
   app.post('/api/review/:id', (req, res) => res.json(service.review(parseId(req.params.id), req.body?.result)));
   app.post('/api/review/:id/spelling', (req, res) => res.json(service.reviewSpelling(parseId(req.params.id), req.body || {})));
   app.get('/api/practice/cards', (req, res) => res.json(service.practiceCards(req.query.scope)));
@@ -55,12 +63,24 @@ function createApp(service, options = {}) {
   app.post('/api/listening/sections/:id/attempts', (req, res) => {
     res.status(201).json(service.recordListeningAttempt(parseId(req.params.id, 'Section'), req.body || {}));
   });
+  app.get('/api/listening/attempts/:attemptId/items', (req, res) => res.json(service.listeningItems(parseId(req.params.attemptId, '听力记录'))));
+  app.put('/api/listening/attempts/:attemptId/items/:questionNumber/error-type', (req, res) => {
+    res.json(service.markListeningError(parseId(req.params.attemptId, '听力记录'), parseId(req.params.questionNumber, '题号'), req.body));
+  });
+  app.post('/api/listening/attempts/:attemptId/items/:questionNumber/collect', (req, res) => {
+    res.status(201).json(service.collectListeningCard(parseId(req.params.attemptId, '听力记录'), parseId(req.params.questionNumber, '题号'), req.body));
+  });
   app.post('/api/numbers/question', (req, res) => res.status(201).json(service.numberQuestion(req.body || {})));
   app.post('/api/numbers/answer', (req, res) => res.status(201).json(service.answerNumberQuestion(req.body || {})));
   app.get('/api/numbers/mistakes', (req, res) => res.json(service.numberMistakes(req.query.limit)));
   app.get('/api/numbers/stats', (req, res) => res.json(service.numberStats()));
   app.post('/api/numbers/exam/start', (req, res) => res.status(201).json(service.startNumberExam(req.body || {})));
   app.get('/api/numbers/exam/:sessionId/summary', (req, res) => res.json(service.numberExamSummary(req.params.sessionId)));
+  app.post('/api/prediction/question', (req, res) => res.status(201).json(service.predictionQuestion()));
+  app.post('/api/prediction/predict', (req, res) => res.json(service.predictAnswerType(req.body || {})));
+  app.post('/api/prediction/answer', (req, res) => res.status(201).json(service.answerPredictionQuestion(req.body || {})));
+  app.get('/api/prediction/stats', (req, res) => res.json(service.predictionStats()));
+  app.get('/api/prediction/mistakes', (req, res) => res.json(service.predictionMistakes(req.query.limit)));
 
   const publicDir = path.join(__dirname, '..', 'public');
   const audioDir = options.audioDir || path.join(__dirname, '..', 'data', 'audio');

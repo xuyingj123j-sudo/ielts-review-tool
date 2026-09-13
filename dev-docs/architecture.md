@@ -42,9 +42,11 @@ The single recommended architecture is a monolithic Node.js application: Express
 
 新增验收入口 `node test_access_token.js` 使用临时数据库、真实 curl 和 `scripts/test_access_browser.js` 的独立 Chrome/CDP，覆盖读写拦截、静态放行、错误口令、刷新记忆和POST重试。`npm test` 顺序执行原样保留的七套旧测试（含数字CDP）及新验收；测试服务与浏览器结束后关闭，临时文件清理。
 
-数字听力与卡片/听力真题并列。`ReviewService.pendingNumberQuestions` 保存 UUID 单题状态，请求时清理满10分钟的题目；生成不落库，只返回 `questionId/spokenText`。答案允许空字符串（考试超时），原始输入不 trim；数据库成功写入 `number_drill_attempts` 后才删除待答题。`mixed` 先选九种具体 subtype，再走该类型的类别与模板，持久化具体 subtype 供错题重练。
+数字听力与卡片/听力真题并列。`ReviewService.pendingNumberQuestions` 保存 UUID 单题状态，请求时清理满10分钟的题目；生成不落库，只返回 `questionId/spokenText`。答案允许空字符串（考试超时），原始输入不 trim；数据库成功写入 `number_drill_attempts` 后才删除待答题。`mixed` 先选九种具体 subtype，再走该类型的类别与模板，持久化具体 subtype 供错题重练。`number_drill_attempts.resolved` 是逐条错题是否已解决的唯一真源；`src/db.js` 在写入新答题记录的同一事务内，仅当本次答对时将有效的未解决错题 id 标为已解决，查询错题只返回 `is_correct=0 AND resolved=0`。Express 只透传可选的 `resolvingMistakeId`，浏览器只携带用户所点记录的 id，不复制解决规则。
 
-`public/numbers.js` 实现专项首页、单题、考试、错题、统计五个 SPA 视图，复用 `api`、配色变量和 `IeltsSpeech`；后者通过显式 `allowNumeric` 支持纯数字音源。考试前端默认10题、五类别随机、每题20秒、最多点击播放2次；超时以空答案提交，离页取消计时和朗读，异步回包按页面代次丢弃。考试 session UUID 按 SPEC 不持久化，服务端聚合已提交记录；本轮没有服务端防作弊或中断续考合同。
+`public/numbers.js` 实现专项首页、单题、考试、错题、统计五个 SPA 视图，复用 `api`、配色变量和 `IeltsSpeech`；后者通过显式 `allowNumeric` 支持纯数字音源。错题页把`GET /api/numbers/mistakes?limit=100`当前返回列表作为一轮前端队列，只提供顶部“开始复习错题”入口；每一步按当前记录的 category/subtype 生成新题并携带该记录 id，完成全队列后展示本轮复习、解决与剩余数；列表行不再有独立复习按钮。考试前端默认10题、五类别随机、每题20秒、最多点击播放2次；超时以空答案提交，离页取消计时和朗读，异步回包按页面代次丢弃。考试 session UUID 按 SPEC 不持久化，服务端聚合已提交记录；本轮没有服务端防作弊或中断续考合同。
+
+同义替换专项与正式SRS复习共用`cards`与`review_logs`，不新建表或状态。`src/db.js` 只按`type='同义替换'`查询，错题口径与拼写专项一致；`ReviewService` 校验查询参数和卡片类型，委托`src/domain/answerMatch.js`判分，只返回`correct/correct_answer`，不调用`applyReview`。Express只暴露`GET /api/paraphrase/cards`与`POST /api/paraphrase/cards/:id/test`；`public/paraphrase.js`负责两个入口、回忆输入、答案揭晓、朗读与持续自测提示，不拥有第二套判分或SRS规则。答案预测专项仍为占位，不在本轮实现。
 
 专项验收入口为 `node test_number_drill.js` / `npm test`，内含六套旧回归。`scripts/test_number_browser.js` 是永久验收配套脚本，用独立无头 Chrome 移动模式测试真实页面和20秒计时，只 mock 系统语音边界；需要 Node 22+（内置 WebSocket）和本机 Chrome/Edge，其他路径可用 `CHROME_PATH`。截图、浏览器 profile、测试数据库默认在系统临时任务目录生成并清理；`NUMBER_SCREENSHOT_DIR` 仅用于人工复核，设置者负责结束后清理。应用运行依然无需浏览器测试依赖或构建链。
 

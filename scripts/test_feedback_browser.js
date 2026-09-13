@@ -64,7 +64,7 @@ async function feedbackBrowserTest(base, temp, cards) {
     await cdp('Runtime.enable'); await cdp('Page.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await cdp('Page.navigate', { url: base });
-    await waitFor('!!document.querySelector("[data-go=numbers]")');
+    await waitFor('!!document.querySelector("[data-go=foundations]")');
     const hiddenListening = async () => {
       assert.equal(await evaluate(`document.querySelectorAll('[data-go="listening"], [data-go="listening-practice"], [data-listening-id]').length`), 0);
     };
@@ -111,7 +111,10 @@ async function feedbackBrowserTest(base, temp, cards) {
     await mouseClick(`[data-delete-template="${templateId}"]`);
     await waitFor(`!document.querySelector('[data-template-id="${templateId}"]')`);
     console.log('CDP 今日任务：真实鼠标添加、改名、勾选、复盘展示和删除通过');
-    await evaluate("navigate('review')"); await waitFor('!!document.querySelector("#flip-scene")');
+    await evaluate("navigate('review')");
+    await waitFor('!!document.querySelector("#review-preview-start") || !!document.querySelector("#flip-scene")');
+    if (await evaluate('!!document.querySelector("#review-preview-start")')) await mouseClick('#review-preview-start');
+    await waitFor('!!document.querySelector("#flip-scene")');
     assert.equal(await evaluate('!!document.querySelector(".practice-notice")'), false);
     await hiddenListening();
     await evaluate("state.practiceScope='all'; navigate('practice')");
@@ -143,7 +146,7 @@ async function feedbackBrowserTest(base, temp, cards) {
       await waitFor('!!document.querySelector("#repeat-practice")'); await notice('单卡');
     }
     console.log('CDP 单卡练习：卡片库真实点击、翻卡/拼写提交和完成页提示持续可见；正式复习无提示');
-    await evaluate("navigate('listening')"); await waitFor('!!document.querySelector("[data-go=numbers]")');
+    await evaluate("navigate('listening')"); await waitFor('!!document.querySelector("[data-go=foundations]")');
     await hiddenListening();
     for (const page of ['home', 'entry', 'library', 'progress', 'weekly', 'numbers']) {
       await evaluate(`navigate('${page}')`); await hiddenListening();

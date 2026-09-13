@@ -85,9 +85,21 @@ async function browserTest(base, temp, service) {
     await cdp('Runtime.enable'); await cdp('Page.enable');
     await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await cdp('Page.navigate', { url: base });
-    await waitFor('!!document.querySelector("[data-go=numbers]")');
+    await waitFor('!!document.querySelector("[data-go=foundations]")');
     await screenshot('home');
-    await click('[data-go=numbers]');
+    await click('[data-go=foundations]');
+    const foundationEntries = await evaluate('[...document.querySelectorAll("[data-foundation]")].map(element => ({text:element.querySelector(".number-label").textContent,target:element.dataset.foundation,disabled:element.disabled}))');
+    assert.deepEqual(foundationEntries, [
+      { text: '数字专项', target: 'numbers', disabled: false },
+      { text: '拼写专项', target: 'spelling', disabled: false },
+      { text: '同义替换专项', target: 'paraphrase', disabled: false },
+      { text: '答案预测专项', target: 'prediction', disabled: false }
+    ]);
+    assert.equal(await evaluate('/连读弱读|能力分析|我的错题/.test(document.querySelector(".foundations-page").textContent)'), false);
+    console.log(`✓ CDP 枢纽页：4个入口=${JSON.stringify(foundationEntries.map(entry => entry.text))}；无连读弱读、能力分析、我的错题`);
+    await click('[data-foundation=numbers]');
+    assert.ok(await evaluate('!!document.querySelector("#number-mistakes")'));
+    console.log('✓ CDP 数字专项首页：自带“错题”入口仍存在');
     assert.equal(await evaluate('[...document.querySelectorAll("[data-subtype]")].filter(button => button.dataset.subtype).length'), 10);
     assert.equal(await evaluate('document.querySelectorAll("[data-category]").length'), 14);
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".number-tile")).borderRadius'), '20px');
@@ -164,11 +176,56 @@ async function browserTest(base, temp, service) {
       if (subtype === 'date') await screenshot('practice');
       await click('#numbers-home');
     }
+    service.db.connection.prepare('UPDATE number_drill_attempts SET resolved=1 WHERE is_correct=0 AND resolved=0').run();
+    const insertMistake = service.db.connection.prepare(`INSERT INTO number_drill_attempts
+      (mode,category,subtype,prompt_text,spoken_text,correct_answer,user_answer,is_correct,exam_session_id,attempted_at,resolved)
+      VALUES (@mode,@category,@subtype,@prompt,@prompt,@correct,'wrong',0,NULL,@attemptedAt,0)`);
+    const seededMistakes = [
+      { mode: 'standalone', category: 'number', subtype: null, prompt: 'Queue number 1234', correct: '1234', attemptedAt: '2026-09-09 13:00:01' },
+      { mode: 'dialogue', category: 'date', subtype: 'birthday', prompt: 'Queue birthday 2001-04-03', correct: '2001-04-03', attemptedAt: '2026-09-09 13:00:02' },
+      { mode: 'standalone', category: 'phone', subtype: null, prompt: 'Queue phone 07911111111', correct: '07911111111', attemptedAt: '2026-09-09 13:00:03' }
+    ];
+    for (const row of seededMistakes) row.id = Number(insertMistake.run(row).lastInsertRowid);
+    const reviewQueue = service.db.connection.prepare('SELECT * FROM number_drill_attempts WHERE is_correct=0 AND resolved=0 ORDER BY attempted_at DESC,id DESC').all();
+    assert.deepEqual(reviewQueue.map(row => row.category), ['phone', 'date', 'number']);
     await click('#number-mistakes'); await waitFor('!!document.querySelector(".number-mistake")');
+    assert.equal(await evaluate('document.querySelectorAll(".number-mistake").length'), 3);
     assert.ok(await evaluate('!!document.querySelector(".number-mistake .number-prompt")'));
+    assert.equal(await evaluate('document.querySelectorAll(".number-mistake button").length'), 0);
+    assert.equal(await evaluate('document.querySelectorAll("#number-review-mistakes").length'), 1);
+    assert.equal(await evaluate('document.querySelector("#number-review-mistakes").childNodes[0].textContent.trim()'), '开始复习错题');
+    assert.equal(await evaluate('document.querySelector(".number-report").textContent.includes("复习这道错题")'), false);
     await screenshot('mistakes');
-    await click('.number-mistake [data-category]'); await waitFor('!!document.querySelector("#number-form")');
-    assert.equal([...service.pendingNumberQuestions.values()].at(-1).subtype, 'date');
+    await click('#number-review-mistakes');
+    for (let index = 0; index < reviewQueue.length; index++) {
+      await waitFor(`document.querySelector('.page-header h1')?.textContent==='错题复习 · ${index + 1}/3' && !!document.querySelector('#number-form')`);
+      const reviewQuestion = [...service.pendingNumberQuestions.values()].at(-1);
+      assert.equal(reviewQuestion.category, reviewQueue[index].category);
+      assert.equal(reviewQuestion.subtype, reviewQueue[index].subtype);
+      const correct = index !== 1;
+      await evaluate(`document.querySelector('#number-answer').value=${JSON.stringify(correct ? reviewQuestion.correctAnswer : 'wrong-again')};document.querySelector('#number-form').requestSubmit()`);
+      await waitFor(`!!document.querySelector('.number-${correct ? 'correct' : 'wrong'}')`);
+      assert.ok((await evaluate('document.querySelector("#number-next").textContent')).includes(index === 2 ? '查看复习总结' : `第 ${index + 2}/3 条`));
+      await click('#number-next');
+    }
+    await waitFor('!!document.querySelector(".number-mistake-summary")');
+    const reviewSummary = await evaluate('document.querySelector(".number-mistake-summary").textContent');
+    assert.ok(reviewSummary.includes('复习 3 条 · 解决 2 条'));
+    assert.ok(reviewSummary.includes('剩余 1 条'));
+    await screenshot('mistake-summary');
+    await click('#number-back-to-mistakes');
+    await waitFor('!!document.querySelector(".number-mistake")');
+    const listedIds = await evaluate('[...document.querySelectorAll(".number-mistake")].map(row=>Number(row.dataset.mistakeId))');
+    assert.equal(listedIds.includes(reviewQueue[0].id), false);
+    assert.equal(listedIds.includes(reviewQueue[1].id), true);
+    assert.equal(listedIds.includes(reviewQueue[2].id), false);
+    console.log(`✓ CDP 错题整套排队：3条不同category按队列进入同类新题；2对1错；总结=“复习 3 条 · 解决 2 条”；答对id=${reviewQueue[0].id},${reviewQueue[2].id}移出，答错id=${reviewQueue[1].id}保留`);
+    service.db.connection.prepare('UPDATE number_drill_attempts SET resolved=1 WHERE is_correct=0 AND resolved=0').run();
+    await click('#numbers-home'); await click('#number-mistakes');
+    await waitFor('!!document.querySelector(".number-report .empty-state")');
+    assert.equal(await evaluate('!!document.querySelector("#number-review-mistakes")'), false);
+    assert.equal(await evaluate('document.querySelector(".number-report .empty-state").textContent'), '还没有错题，去听一道题吧。');
+    console.log('✓ CDP 错题空状态：不显示“开始复习错题”，不会启动0题会话');
     await click('#numbers-home'); await click('#number-stats');
     await waitFor('document.querySelectorAll(".number-report .stat-card").length===5'); await screenshot('stats');
     await click('#numbers-home'); await click('#number-exam');
@@ -199,7 +256,7 @@ async function browserTest(base, temp, service) {
     await evaluate('document.querySelector("#number-exam-form").requestSubmit()');
     await waitFor('!!document.querySelector("#number-clock")');
     const count = service.db.connection.prepare('SELECT COUNT(*) n FROM number_drill_attempts').get().n;
-    await click('[data-page="home"]'); await waitFor('!!document.querySelector("[data-go=numbers]")');
+    await click('[data-page="home"]'); await waitFor('!!document.querySelector("[data-go=foundations]")');
     await delay(21000);
     assert.equal(service.db.connection.prepare('SELECT COUNT(*) n FROM number_drill_attempts').get().n, count);
     assert.deepEqual(errors, []);

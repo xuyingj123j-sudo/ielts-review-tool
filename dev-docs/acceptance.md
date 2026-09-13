@@ -1,5 +1,14 @@
 # 验收记录
 
+## 2026-09-13 数字错题整套排队 + 同义替换回忆型自测（本地）
+
+- 数字错题页只保留列表顶部“开始复习错题”入口，列表行不再带独立复习按钮。当前最多100条未解决错题被固定为本轮队列，按原 category/subtype 依次生成新题，每条携带自身`resolvingMistakeId`，末尾展示复习/解决/剩余总结。空列表不显示启动入口。
+- 数字错题新交互未改动`src/db.js#createNumberDrillAttempt/numberDrillMistakes`与`src/services.js#answerNumberQuestion`；实现前后方法片段 SHA-256 分别保持`8f90b235...`、`a67967ab...`、`101bd799...`。`node test_number_drill.js`的 CDP 真实构造3条不同category错题，按队列做成2对1错，总结显示“复习 3 条 · 解决 2 条”；返回列表后两条原错题已移出，答错原记录保留。
+- 同义替换专项不限skill读取`type='同义替换'`卡片；`mistakes=true`沿用“box=1或最近一条review_log为incorrect”口径。`POST /api/paraphrase/cards/:id/test`复用`answerMatches`，返回`correct/correct_answer`而不写`review_logs`、不改`box/review_count`。
+- `node test_paraphrase.js`的真实curl已验证明文`back`、错题筛选、`FILM`命中`movie/film`、错答回显及`box=1→1, review_count=0→0, review_logs=0→0`。CDP已验证枢纽入口、题干、输入、答案、朗读、持续提示条和错题筛选；320/390视口均`scrollWidth=bodyScrollWidth=viewportWidth`，白色`20px`圆角卡片与暖色背景变量保持。
+- 最终`npm.cmd test`完整执行`test_number_drill.js && test_access_token.js && test_feedback.js && test_listening_foundations.js && test_paraphrase.js`，终端输出`NPM_TEST_EXIT=0`。临时数据库、Chrome profile与自动截图由测试脚本清理；人工视觉复核用截图也已在查看后逐文件删除，目录确认不存在。
+- 答案预测专项仍为灰色占位，本轮没有新增其数据表、API、前端流程或测试。本轮未连接生产服务器、未部署、未操作PM2、未提交或推送Git。
+
 ## 2026-09-12 数字听力全角输入修复（本地）
 
 仅实现 SPEC 中“判分要兼容中文输入法的全角字符”一节。`src/domain/numberDrill.js` 的 `gradeAnswer` 在所有类别解析前调用纯函数 `normalizeWidth`，仅转换指定数字、标点和全角空格，沿用既有类别判分规则。

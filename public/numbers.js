@@ -38,14 +38,26 @@ window.IeltsNumbers = (() => {
       <div class="section-heading"><h2>进阶测验</h2></div><div class="grid number-grid">${Object.entries(categories).slice(1).map(([key, label]) => launchButton(label, key)).join('')}</div>
       <button class="card number-exam-entry" id="number-exam">考试模式 <span>限时 · 混合出题 →</span></button>
       <div class="section-heading"><h2>对话测验</h2></div><div class="grid number-grid">${Object.entries(subtypes).map(([key, label]) => launchButton(label, '', key)).join('')}</div>`);
+    context.root.querySelector('#numbers-home').onclick = () => context.navigate('foundations');
     context.root.querySelector('#number-start').onclick = () => practice({ mode: 'standalone', category: 'number' });
     context.root.querySelector('#number-mistakes').onclick = mistakes;
     context.root.querySelector('#number-stats').onclick = stats;
     context.root.querySelector('#number-exam').onclick = examSetup;
     bindPractice();
   }
-  async function practice(config, exam = null) {
-    const token = page(exam ? `考试 · ${exam.index + 1}/${exam.count}` : (config.mode === 'dialogue' ? `${subtypes[config.subtype]} · 对话` : categories[config.category]), exam ? '每题20秒，最多播放2次。' : '点击喇叭听题，可反复播放。', '<div class="card empty-state">正在准备题目…</div>');
+  async function practice(config, exam = null, mistakeReview = null) {
+    const reviewingMistake = Boolean(mistakeReview);
+    const title = exam
+      ? `考试 · ${exam.index + 1}/${exam.count}`
+      : reviewingMistake
+        ? `错题复习 · ${mistakeReview.index + 1}/${mistakeReview.mistakeQueue.length}`
+        : (config.mode === 'dialogue' ? `${subtypes[config.subtype]} · 对话` : categories[config.category]);
+    const subtitle = exam
+      ? '每题20秒，最多播放2次。'
+      : reviewingMistake
+        ? `正在复习第 ${mistakeReview.index + 1} / 总 ${mistakeReview.mistakeQueue.length} 条`
+        : '点击喇叭听题，可反复播放。';
+    const token = page(title, subtitle, '<div class="card empty-state">正在准备题目…</div>');
     try {
       const question = await post('question', config);
       if (token !== generation) return;
@@ -55,7 +67,7 @@ window.IeltsNumbers = (() => {
       panel.innerHTML = `<div class="number-status">${exam ? '<strong id="number-clock">20 秒</strong>' : '<span>只听声音，输入你听到的答案</span>'}</div>
         <button type="button" class="primary-button number-speaker" id="number-play" aria-label="播放题目">🔊</button><p id="number-play-status">${exam ? '剩余播放 2 次' : '不限播放次数'}</p>
         <form id="number-form"><label for="number-answer">你的答案</label><input id="number-answer" autocomplete="off" maxlength="5000" placeholder="输入数字、日期、时间或金额"><button class="primary-button" type="submit">提交答案</button></form>
-        <div id="number-feedback" role="status"></div><button class="secondary-button" id="number-next" hidden>${exam && exam.index + 1 === exam.count ? '查看成绩' : '下一题'}</button>`;
+        <div id="number-feedback" role="status"></div><button class="secondary-button" id="number-next" hidden>${exam && exam.index + 1 === exam.count ? '查看成绩' : reviewingMistake ? (mistakeReview.index + 1 === mistakeReview.mistakeQueue.length ? '查看复习总结' : `下一条 · 第 ${mistakeReview.index + 2}/${mistakeReview.mistakeQueue.length} 条`) : '下一题'}</button>`;
       let plays = 0, busy = false, answered = false, timedOut = false;
       const deadline = exam ? Date.now() + 20000 : null;
       const play = panel.querySelector('#number-play');
@@ -86,11 +98,17 @@ window.IeltsNumbers = (() => {
         clearInterval(timer);
         window.speechSynthesis?.cancel();
         try {
-          const result = await post('answer', { questionId: question.questionId, userAnswer: timedOut ? '' : input.value, ...(exam ? { examSessionId: exam.id } : {}) });
+          const result = await post('answer', {
+            questionId: question.questionId,
+            userAnswer: timedOut ? '' : input.value,
+            ...(exam ? { examSessionId: exam.id } : {}),
+            ...(reviewingMistake ? { resolvingMistakeId: mistakeReview.mistakeQueue[mistakeReview.index].id } : {})
+          });
           if (token !== generation) return;
           answered = true;
           const category = config.mode === 'dialogue' ? subtypeCategories[config.subtype] : config.category;
           panel.querySelector('#number-feedback').innerHTML = `<h2 class="${result.isCorrect ? 'number-correct' : 'number-wrong'}">${timedOut ? '时间到 · 回顾答案' : result.isCorrect ? '答对了 ✓' : '再记一次'}</h2><p>正确答案：<strong>${context.escapeHtml(result.correctAnswer)}</strong></p>${['date', 'time', 'money'].includes(category) ? `<p class="number-spoken">英语读作：<em>${context.escapeHtml(result.spokenText)}</em></p>` : ''}${result.promptText ? `<p class="number-prompt">${context.escapeHtml(result.promptText)}</p>` : ''}`;
+          if (reviewingMistake && result.isCorrect) mistakeReview.resolvedCount += 1;
           panel.querySelector('#number-next').hidden = false;
         } catch (error) {
           if (token !== generation) return;
@@ -103,6 +121,10 @@ window.IeltsNumbers = (() => {
       }
       form.onsubmit = event => { event.preventDefault(); submit(); };
       panel.querySelector('#number-next').onclick = () => {
+        if (reviewingMistake) {
+          mistakeReview.index += 1;
+          return mistakeReview.index === mistakeReview.mistakeQueue.length ? mistakeSummary(mistakeReview) : mistakeQuestion(mistakeReview);
+        }
         if (!exam) return practice(config);
         exam.index += 1;
         return exam.index === exam.count ? summary(exam) : examQuestion(exam);
@@ -119,7 +141,7 @@ window.IeltsNumbers = (() => {
     } catch (error) {
       if (token !== generation) return;
       context.root.querySelector('.empty-state').innerHTML = `<p>${context.escapeHtml(error.message)}</p><button class="secondary-button" id="number-retry">重新加载</button>`;
-      context.root.querySelector('#number-retry').onclick = () => practice(config, exam);
+      context.root.querySelector('#number-retry').onclick = () => practice(config, exam, mistakeReview);
     }
   }
   function examSetup() {
@@ -140,6 +162,18 @@ window.IeltsNumbers = (() => {
     const keys = Object.keys(categories);
     return practice({ mode: 'exam', category: keys[Math.floor(Math.random() * keys.length)] }, exam);
   }
+  function mistakeQuestion(review) {
+    const mistake = review.mistakeQueue[review.index];
+    return practice({
+      mode: mistake.subtype ? 'dialogue' : 'standalone',
+      category: mistake.category,
+      subtype: mistake.subtype || null
+    }, null, review);
+  }
+  function mistakeSummary(review) {
+    page('错题复习总结', '这一轮已经全部完成。', `<article class="card number-practice number-mistake-summary"><h2>复习 ${review.mistakeQueue.length} 条 · 解决 ${review.resolvedCount} 条</h2><p>本轮复习了 ${review.mistakeQueue.length} 条错题，解决了 ${review.resolvedCount} 条，剩余 ${review.mistakeQueue.length - review.resolvedCount} 条。</p><button class="primary-button" id="number-back-to-mistakes">返回错题列表</button></article>`);
+    context.root.querySelector('#number-back-to-mistakes').onclick = mistakes;
+  }
   function accuracyCards(byCategory) {
     return `<div class="grid number-grid">${Object.entries(byCategory).map(([key, row], index) => `<article class="card stat-card ${themes[index % themes.length]}"><div class="stat-icon">${index + 1}</div><span class="stat-label">${categories[key]}</span><strong class="stat-value">${row.accuracy === null ? '—' : `${row.accuracy}%`}</strong><small>${row.total} 题</small></article>`).join('')}</div>`;
   }
@@ -157,6 +191,21 @@ window.IeltsNumbers = (() => {
   }
   const summary = exam => report('考试成绩', `exam/${exam.id}/summary`, data => `<article class="card number-practice"><h2>${data.score}/${data.total}</h2><p>本次考试得分</p></article>${accuracyCards(data.byCategory)}`);
   const stats = () => report('数字听力统计', 'stats', data => `<article class="card number-practice"><h2>${data.accuracy === null ? '暂无记录' : `${data.accuracy}%`}</h2><p>总正确率 · 已答 ${data.total} 题 · 答对 ${data.correct} 题</p></article>${accuracyCards(data.byCategory)}`);
-  const mistakes = () => report('最近错题', 'mistakes?limit=20', rows => rows.length ? rows.map(row => `<article class="card number-mistake"><span class="badge listening">${row.subtype ? subtypes[row.subtype] : categories[row.category]}</span><p>${context.escapeHtml(row.attempted_at)}</p>${row.prompt_text ? `<p class="number-prompt">${context.escapeHtml(row.prompt_text)}</p>` : ''}<p>你的答案：${context.escapeHtml(row.user_answer) || '未作答'}</p><p>正确答案：<strong>${context.escapeHtml(row.correct_answer)}</strong></p>${launchButton('重新练习这一类', row.category, row.subtype || '')}</article>`).join('') : '<div class="card empty-state">还没有错题，去听一道题吧。</div>');
+  async function mistakes() {
+    const token = page('最近错题', '把未解决的错题作为一整套连续复习。', '<div class="number-report">加载中…</div>');
+    try {
+      const rows = await context.api('/api/numbers/mistakes?limit=100');
+      if (token !== generation) return;
+      const reportPanel = context.root.querySelector('.number-report');
+      if (!rows.length) {
+        reportPanel.innerHTML = '<div class="card empty-state">还没有错题，去听一道题吧。</div>';
+        return;
+      }
+      reportPanel.innerHTML = `<button class="card number-exam-entry" id="number-review-mistakes">开始复习错题 <span>${rows.length} 条排队复习 →</span></button><div class="number-mistake-list">${rows.map(row => `<article class="card number-mistake" data-mistake-id="${row.id}"><span class="badge listening">${row.subtype ? subtypes[row.subtype] : categories[row.category]}</span><p>${context.escapeHtml(row.attempted_at)}</p>${row.prompt_text ? `<p class="number-prompt">${context.escapeHtml(row.prompt_text)}</p>` : ''}<p>你的答案：${context.escapeHtml(row.user_answer) || '未作答'}</p><p>正确答案：<strong>${context.escapeHtml(row.correct_answer)}</strong></p></article>`).join('')}</div>`;
+      context.root.querySelector('#number-review-mistakes').onclick = () => mistakeQuestion({ mistakeQueue: rows, index: 0, resolvedCount: 0 });
+    } catch (error) {
+      if (token === generation) context.root.querySelector('.number-report').textContent = error.message;
+    }
+  }
   return { mount(options) { context = options; home(); }, dispose };
 })();

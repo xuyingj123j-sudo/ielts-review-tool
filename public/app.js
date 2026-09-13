@@ -93,9 +93,12 @@ function setActiveNav(page) {
 async function navigate(page) {
   if (['listening', 'listening-practice'].includes(page)) page = 'home';
   window.IeltsNumbers?.dispose();
+  window.IeltsSpelling?.dispose();
+  window.IeltsParaphrase?.dispose();
+  window.IeltsPrediction?.dispose();
   state.page = page;
   state.editingId = page === 'entry' ? state.editingId : null;
-  setActiveNav(['progress', 'weekly', 'task-templates', 'listening', 'listening-practice', 'numbers'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
+  setActiveNav(['progress', 'weekly', 'task-templates', 'listening', 'listening-practice', 'numbers', 'foundations', 'spelling', 'paraphrase', 'prediction', 'listening-items'].includes(page) ? 'home' : (page === 'practice' ? 'review' : page));
   loading();
   window.scrollTo({ top: 0, behavior: 'smooth' });
   try {
@@ -109,7 +112,12 @@ async function navigate(page) {
     if (page === 'task-templates') await renderTaskTemplates();
     if (page === 'listening') await renderListeningOverview();
     if (page === 'listening-practice') await renderListeningPractice(state.listeningSectionId);
-    if (page === 'numbers') window.IeltsNumbers.mount({ root, api, escapeHtml, speech, showToast });
+    if (page === 'numbers') window.IeltsNumbers.mount({ root, api, escapeHtml, speech, showToast, navigate });
+    if (page === 'foundations') window.IeltsFoundations.mount({ root, navigate });
+    if (page === 'spelling') await window.IeltsSpelling.mount({ root, api, escapeHtml, speech, showToast, navigate });
+    if (page === 'paraphrase') await window.IeltsParaphrase.mount({ root, api, escapeHtml, speech, showToast, navigate });
+    if (page === 'prediction') window.IeltsPrediction.mount({ root, api, escapeHtml, speech, showToast, navigate });
+    if (page === 'listening-items') await renderListeningItems(Number(location.hash.split('/')[1]));
   } catch (error) {
     root.innerHTML = `<div class="card empty-state"><div class="emoji">⚠️</div><h2>暂时没有加载成功</h2><p>${escapeHtml(error.message)}</p><button class="primary-button" id="retry">再试一次</button></div>`;
     document.querySelector('#retry')?.addEventListener('click', () => navigate(page));
@@ -134,8 +142,8 @@ async function renderHome() {
     </header>
     <article class="card listening-module-card">
       <div class="listening-module-icon">123</div>
-      <div><h2>数字听力</h2><p>从数字、日期到真实对话，听清每一个细节。</p></div>
-      <button class="round-arrow" data-go="numbers" aria-label="进入数字听力">→</button>
+      <div><h2>听力基础训练</h2><p>从数字到拼写，逐项巩固听力基础。</p></div>
+      <button class="round-arrow" data-go="foundations" aria-label="进入听力基础训练">→</button>
     </article>
     <div class="section-heading"><h2>四项积累</h2><button class="text-link" data-go="progress">查看进度</button></div>
     <div class="grid skill-grid">${Object.entries(skillMeta).map(([skill, meta]) => `
@@ -244,6 +252,7 @@ function bindSpeechButtons() {
 }
 
 async function renderEntry() {
+  const { spellingCategories } = await window.IeltsFoundations.meta(api);
   let card = null;
   if (state.editingId) {
     const cards = await api('/api/cards');
@@ -261,12 +270,16 @@ async function renderEntry() {
         <div class="field"><label for="front-audio">正面朗读用完整原句（可选，含答案，只用于生成语音，不会显示成文字）</label><textarea id="front-audio" name="front_audio" maxlength="5000" placeholder="例：She often goes to a keep-fit studio near her house.">${escapeHtml(card?.front_audio || '')}</textarea></div>
         <div class="field"><div class="field-label-row"><label for="back">背面 · 正确答案</label>${speech.buttonHtml(card?.back || '', '背面', { target: 'back', force: true })}</div><textarea id="back" name="back" maxlength="5000" required placeholder="原文表达、正确表达或高阶替换词">${escapeHtml(card?.back || '')}</textarea></div>
         <label class="mode-toggle" for="review-mode"><input id="review-mode" name="review_mode" type="checkbox" value="spelling" ${card?.review_mode === 'spelling' ? 'checked' : ''}><span><strong>拼写测试模式</strong><small>复习时听背面发音并输入拼写，系统自动判分</small></span></label>
+        <div class="field" id="spelling-category-field" ${card?.review_mode === 'spelling' ? '' : 'hidden'}><label for="spelling-category">拼写分类（选填）</label><select id="spelling-category" name="spelling_category"><option value="">暂不分类</option>${Object.entries(spellingCategories).map(([key, label]) => `<option value="${key}" ${card?.spelling_category === key ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></div>
         <div class="field"><label for="note" id="note-label">${cardUi.noteLabel(card?.skill || '听力', card?.type || types[0])}</label><textarea id="note" name="note" maxlength="5000" placeholder="补充说明或错因">${escapeHtml(card?.note || '')}</textarea></div>
         <div class="button-row"><button class="primary-button" type="submit">${card ? '保存修改' : '保存卡片'}</button>${card ? '<button class="secondary-button" type="button" id="cancel-edit">取消</button>' : ''}</div>
       </div>
     </form>
   </section>`;
   bindSpeechButtons();
+  document.querySelector('#review-mode').addEventListener('change', event => {
+    document.querySelector('#spelling-category-field').hidden = !event.target.checked;
+  });
   const updateNoteLabel = () => {
     document.querySelector('#note-label').textContent = cardUi.noteLabel(document.querySelector('#skill').value, document.querySelector('#type').value);
   };
@@ -278,6 +291,7 @@ async function renderEntry() {
     const form = new FormData(event.currentTarget);
     const payload = Object.fromEntries(form.entries());
     payload.review_mode = form.has('review_mode') ? 'spelling' : 'flip';
+    payload.spelling_category = payload.review_mode === 'spelling' ? (form.get('spelling_category') || null) : null;
     try {
       if (card) await api(`/api/cards/${card.id}`, { method: 'PUT', body: JSON.stringify(payload) });
       else await api('/api/cards', { method: 'POST', body: JSON.stringify(payload) });
@@ -328,11 +342,33 @@ async function renderLibrary(filters = {}) {
 async function renderReview(reset = true) {
   if (reset) {
     state.reviewKind = 'formal';
+    const preview = await api('/api/review/queue/preview');
     state.queue = await api('/api/review/queue');
     state.reviewIndex = 0;
     state.correct = 0;
+    if (preview.length) {
+      renderReviewPreview(preview);
+      return;
+    }
   }
   renderCurrentReview();
+}
+
+function renderReviewPreview(cards) {
+  root.innerHTML = `<section class="page review-wrap review-preview">
+    ${pageHeader('复习前先看一遍', `本轮共 ${cards.length} 张，完整预习后再开始测试`)}
+    <div class="library-list">${cards.map((card, index) => {
+      const meta = skillMeta[card.skill];
+      return `<article class="card form-card review-preview-item" data-preview-card="${card.id}">
+        <div class="card-meta"><span class="badge ${meta.className}">${card.skill}</span><span class="badge plain-badge">${index + 1} / ${cards.length}</span></div>
+        <div class="speech-line"><h3>${escapeHtml(card.front)}</h3>${speech.buttonHtml(speech.frontText(card), '卡片正面')}</div>
+        <div class="speech-line library-back"><p>${escapeHtml(card.back)}</p>${speech.buttonHtml(card.back, '卡片背面')}</div>
+      </article>`;
+    }).join('')}</div>
+    <div class="practice-actions"><button class="primary-button" id="review-preview-start">开始测试</button></div>
+  </section>`;
+  bindSpeechButtons();
+  document.querySelector('#review-preview-start').addEventListener('click', renderCurrentReview);
 }
 
 async function renderPractice() {
@@ -412,7 +448,14 @@ function renderCurrentReview() {
     document.querySelectorAll('[data-result]').forEach((item) => { item.disabled = true; });
     try {
       if (state.reviewKind === 'formal') {
-        await api(`/api/review/${card.id}`, { method: 'POST', body: JSON.stringify({ result: button.dataset.result }) });
+        const result = await api(`/api/review/${card.id}`, { method: 'POST', body: JSON.stringify({ result: button.dataset.result }) });
+        if (card.skill === '听力' && button.dataset.result === 'incorrect') {
+          const controls = document.querySelector('#review-controls');
+          controls.innerHTML = '<div class="review-error-picker"></div><button class="primary-button" id="review-error-next">下一张（可跳过标记）</button>';
+          controls.querySelector('#review-error-next').onclick = () => { state.reviewIndex += 1; renderCurrentReview(); };
+          await window.IeltsFoundations.errorPicker(controls.querySelector('.review-error-picker'), { api, escapeHtml, showToast, url: `/api/review/logs/${result.review_log_id}/error-type` });
+          return;
+        }
       }
       if (button.dataset.result === 'correct') state.correct += 1;
       state.reviewIndex += 1;
@@ -460,6 +503,11 @@ function renderSpellingReview(card, meta, total) {
         : (state.reviewKind === 'formal' ? `✕ 拼写错误，正确答案：<strong>${escapeHtml(result.correct_answer)}</strong>（已回到第 1 箱）` : `✕ 拼写错误，正确答案：<strong>${escapeHtml(result.correct_answer)}</strong>（仅自测，进度未变）`);
       form.hidden = true;
       document.querySelector('#spelling-next').hidden = false;
+      if (!result.correct && card.skill === '听力' && result.review_log_id) {
+        const picker = document.createElement('div');
+        resultBox.append(picker);
+        await window.IeltsFoundations.errorPicker(picker, { api, escapeHtml, showToast, url: `/api/review/logs/${result.review_log_id}/error-type` });
+      }
     } catch (error) {
       showToast(error.message);
       submit.disabled = false;
@@ -616,6 +664,50 @@ function showListeningGrading(result) {
   summary.hidden = false;
 }
 
+async function listeningItemsPanel(container, attemptId) {
+  const items = await api(`/api/listening/attempts/${attemptId}/items`);
+  if (!container.isConnected) return;
+  container.innerHTML = `<p><a href="#listening-attempt/${attemptId}">打开本次逐题明细（可收藏后再处理）</a></p>${items.length ? items.map(item => `<article class="card listening-item" data-item-number="${item.question_number}">
+    <h3>${item.is_correct ? '✓' : '✕'} Q${item.question_number}</h3><p>你的答案：${escapeHtml(item.user_answer) || '（空）'}</p><p>正确答案：${escapeHtml(item.correct_answer)}</p>
+    ${item.is_correct ? '' : `<div class="item-error-picker"></div><button class="secondary-button" data-collect ${item.collected_card_id ? 'disabled' : ''}>${item.collected_card_id ? '已收录' : '收录到卡片库'}</button>`}</article>`).join('') : '<p>这条历史记录尚未保存逐题明细。</p>'}`;
+  for (const item of items.filter(item => !item.is_correct)) {
+    const row = container.querySelector(`[data-item-number="${item.question_number}"]`);
+    const endpoint = `/api/listening/attempts/${attemptId}/items/${item.question_number}`;
+    window.IeltsFoundations.errorPicker(row.querySelector('.item-error-picker'), { api, escapeHtml, showToast, url: `${endpoint}/error-type`, value: item.error_type }).catch(error => showToast(error.message));
+    row.querySelector('[data-collect]').onclick = () => {
+      const dialog = document.createElement('dialog');
+      dialog.className = 'collect-dialog';
+      dialog.innerHTML = `<form class="form-card"><h2>收录错题</h2><div class="form-grid">
+        <label class="field">技能<select name="skill">${Object.keys(skillMeta).map(skill => `<option>${skill}</option>`).join('')}</select></label>
+        <label class="field">类型<select name="type">${types.map(type => `<option ${type === '听力误听' ? 'selected' : ''}>${type}</option>`).join('')}</select></label>
+        <label class="field">正面 · 原文上下文<textarea name="front" required maxlength="5000">${escapeHtml(item.context)}</textarea></label>
+        <label class="field">背面 · 正确答案<textarea name="back" required maxlength="5000">${escapeHtml(item.correct_answer)}</textarea></label>
+        <label class="field">备注 · 当时的错误答案<textarea name="note" maxlength="5000">${escapeHtml(item.user_answer)}</textarea></label>
+        <div class="button-row"><button class="primary-button" type="submit">确认收录</button><button class="secondary-button" type="button" data-cancel>取消</button></div></div></form>`;
+      dialog.addEventListener('close', () => dialog.remove());
+      dialog.querySelector('[data-cancel]').onclick = () => dialog.close();
+      dialog.querySelector('form').onsubmit = async event => {
+        event.preventDefault();
+        const submit = dialog.querySelector('[type="submit"]');
+        submit.disabled = true;
+        try {
+          await api(`${endpoint}/collect`, { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+          const button = row.querySelector('[data-collect]');
+          button.textContent = '已收录'; button.disabled = true;
+          dialog.close(); showToast('已收录到卡片库');
+        } catch (error) { showToast(error.message); submit.disabled = false; }
+      };
+      document.body.append(dialog); dialog.showModal();
+    };
+  }
+}
+
+async function renderListeningItems(attemptId) {
+  root.innerHTML = `<section class="page listening-page">${pageHeader('听力逐题明细', '错因可以稍后再标记', '<button class="text-link" data-go="home">返回首页</button>')}<div id="listening-items"></div></section>`;
+  bindGoButtons();
+  await listeningItemsPanel(root.querySelector('#listening-items'), attemptId);
+}
+
 async function renderListeningPractice(sectionId) {
   if (!sectionId) return navigate('listening');
   const detail = await api(`/api/listening/sections/${sectionId}`);
@@ -631,6 +723,7 @@ async function renderListeningPractice(sectionId) {
     <article class="card listening-fill-card">
       <div><h2>原文填空</h2><p>答案位置由原文中的题号标记即时解析，不会另存题目副本。</p></div>
       <div id="listening-score-result" class="listening-score-result" hidden></div>
+      <div id="listening-items"></div>
       <div class="listening-transcript-fill">${listeningTranscriptHtml(section.transcript_segments)}</div>
     </article>
     <div class="listening-reveal-grid">
@@ -652,7 +745,7 @@ async function renderListeningPractice(sectionId) {
       </form>
     </article>
     <div class="section-heading"><h2>历史练习</h2><span class="muted-text">${attempts.length} 次</span></div>
-    <div class="attempt-history">${attempts.length ? attempts.map((attempt) => `<article class="card attempt-row"><strong>${attempt.score_correct}/${attempt.score_total}</strong><span>${escapeHtml(attempt.attempt_date)}</span><small>${attempt.notes ? escapeHtml(attempt.notes) : '无备注'}</small></article>`).join('') : '<article class="card empty-state"><p>还没有练习记录。</p></article>'}</div>
+    <div class="attempt-history">${attempts.length ? attempts.map((attempt) => `<article class="card attempt-row"><strong>${attempt.score_correct}/${attempt.score_total}</strong><span>${escapeHtml(attempt.attempt_date)}</span><small>${attempt.notes ? escapeHtml(attempt.notes) : '无备注'}</small><a href="#listening-attempt/${attempt.id}">查看逐题明细</a></article>`).join('') : '<article class="card empty-state"><p>还没有练习记录。</p></article>'}</div>
   </section>`;
   bindGoButtons();
   document.querySelectorAll('[data-reveal]').forEach((button) => button.addEventListener('click', () => {
@@ -683,6 +776,7 @@ async function renderListeningPractice(sectionId) {
       form.querySelectorAll('input, textarea, button').forEach((control) => { control.disabled = true; });
       submit.textContent = `已自动判分 ${result.score_correct}/${result.score_total}`;
       showToast(result.attempt.qualified ? '记录已保存：本次达标' : '记录已保存：本次未达标');
+      listeningItemsPanel(root.querySelector('#listening-items'), result.attempt.id).catch(error => showToast(error.message));
     } catch (error) {
       submit.disabled = false;
       showToast(error.message);
@@ -693,4 +787,9 @@ async function renderListeningPractice(sectionId) {
 document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => { state.editingId = null; navigate(button.dataset.page); }));
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 if ('speechSynthesis' in window) window.speechSynthesis.addEventListener('voiceschanged', () => speech.refreshButtons(root));
-navigate('home');
+function openListeningHash() {
+  if (/^#listening-attempt\/\d+$/.test(location.hash)) navigate('listening-items');
+  else navigate('home');
+}
+window.addEventListener('hashchange', openListeningHash);
+openListeningHash();

@@ -105,7 +105,12 @@ async function main() {
     const oldTasks = source.prepare('SELECT * FROM daily_tasks ORDER BY id').all();
     try { await source.backup(path.join(temp, 'real-copy.db')); } finally { source.close(); }
     db = new ReviewDatabase(path.join(temp, 'real-copy.db'));
-    assert.deepEqual(snapshot(db.connection), before);
+    assert.deepEqual(snapshot(db.connection), {
+      ...before,
+      cards: before.cards.map(row => ({ source: 'manual', spelling_category: null, ...row })),
+      review_logs: before.review_logs.map(row => ({ error_type: null, ...row })),
+      number_drill_attempts: before.number_drill_attempts.map(row => ({ error_type: null, resolved: 0, ...row }))
+    });
     for (const task of oldTasks) {
       const migrated = db.connection.prepare('SELECT * FROM daily_tasks WHERE id = ?').get(task.id);
       for (const [key, value] of Object.entries(task)) assert.equal(migrated[key], value);
